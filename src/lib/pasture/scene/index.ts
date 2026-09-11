@@ -4,14 +4,15 @@ import { mulberry32 } from "@/lib/rng"
 import { penFor, type PenID } from "../pens"
 import { paintSign } from "./atlas"
 import { buildCow, disposeCow, gripHeight, headHeight, type CowParts, type CowSpec } from "./cow"
-import { createCritters } from "./critters"
+import { createCritters, type WolfSpec } from "./critters"
+import { isWolfID } from "../critters"
 import { buildHand, curlHand } from "./hand"
 import { POND, buildScenery, inPond } from "./scenery"
 
 export type { CowSpec } from "./cow"
 
 /** What the pointer is over: a cow (a pull request) or one of the field's residents. */
-export type PickTarget = { kind: "cow"; id: string } | { kind: "critter"; id: string }
+export type PickTarget = { kind: "cow"; id: string } | { kind: "critter"; id: string } | { kind: "wolf"; id: string }
 
 /**
  * The pasture: five fenced pens on a green field (drafts, awaiting review,
@@ -28,6 +29,7 @@ export type PastureEvents = {
   /** Pointer is over a cow or a critter (or left one); x/y are client coordinates. */
   onHover(target: PickTarget | undefined, x: number, y: number): void
   onSelect(target: PickTarget | undefined): void
+  /** Double-click: a cow's PR, or a wolf's alarm (the id carries the wolf prefix). */
   onOpen(id: string): void
   /** The hand of god has just taken hold of a cow (a move, an arrival or a departure). */
   onCarry?(id: string): void
@@ -44,6 +46,8 @@ export type PastureScene = {
   screenPosition(id: string): { x: number; y: number } | undefined
   /** Click a critter: the farmer stops and tells you off (his line comes back); a pet hops. */
   poke(id: string): string | undefined
+  /** One wolf per firing alarm. Returns the wolf ids that just came out of the trees. */
+  setWolves(wolves: WolfSpec[]): string[]
   dispose(): void
 }
 
@@ -226,7 +230,7 @@ export function createPastureScene(canvas: HTMLCanvasElement, events: PastureEve
   const onDoubleClick = (event: MouseEvent) => {
     updatePointer(event)
     const target = pick()
-    if (target?.kind === "cow") events.onOpen(target.id)
+    if (target?.kind === "cow" || target?.kind === "wolf") events.onOpen(target.id)
   }
   canvas.addEventListener("pointermove", onPointerMove)
   canvas.addEventListener("pointerleave", onPointerLeave)
@@ -244,7 +248,7 @@ export function createPastureScene(canvas: HTMLCanvasElement, events: PastureEve
         return cow && !cow.hidden ? { kind: "cow", id: cowID } : undefined
       }
       const critterID = hit.object.userData.critterID as string | undefined
-      if (critterID) return { kind: "critter", id: critterID }
+      if (critterID) return { kind: isWolfID(critterID) ? "wolf" : "critter", id: critterID }
     }
     return undefined
   }
@@ -748,6 +752,9 @@ export function createPastureScene(canvas: HTMLCanvasElement, events: PastureEve
     },
     poke(id) {
       return critters.poke(id)
+    },
+    setWolves(wolves) {
+      return critters.setWolves(wolves)
     },
     dispose() {
       cancelAnimationFrame(raf)

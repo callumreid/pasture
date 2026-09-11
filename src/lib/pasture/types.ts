@@ -91,3 +91,35 @@ export type OrgSummary = { login: string; name: string | null; avatarUrl: string
 export type Viewer = { login: string; avatarUrl: string | null; orgs: OrgSummary[] }
 
 export const cowID = (pr: Pick<PullRequest, "repo" | "number">) => `${pr.repo}#${pr.number}`
+
+// ---------------------------------------------------------------- alarms
+
+/** How hard the wolf is: `critical` is a P1/P2 monitor, `alert` is any other page. */
+export type AlarmSeverity = "critical" | "alert"
+
+/**
+ * One firing page: a Datadog monitor (or one alerting group of a multi-alert
+ * monitor) that notifies the on-call webhook. Each one is a wolf at the fence.
+ */
+export type Alarm = {
+  /** `monitorId` for a simple monitor, `monitorId|group` for one group of a multi-alert one. */
+  id: string
+  monitorId: number
+  title: string
+  /** The alerting group, when the monitor alerts per group. */
+  group?: string
+  /** From the monitor's `team:` tag. */
+  team?: string
+  severity: AlarmSeverity
+  /** When this monitor (or group) last went into Alert. */
+  since: string
+  url: string
+}
+
+export type Alarms = {
+  /** False when the server has no alarm source; the field then never shows wolves. */
+  configured: boolean
+  alarms: Alarm[]
+  fetchedAt: number
+  error?: string
+}

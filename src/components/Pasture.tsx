@@ -2,21 +2,24 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { assignCollars, collarIndex } from "@/lib/pasture/collars"
-import { FARMER_ID, critterByID } from "@/lib/pasture/critters"
+import { FARMER_ID, alarmIDOf, critterByID, isWolfID } from "@/lib/pasture/critters"
+import { howl } from "@/lib/pasture/howl"
 import { advanceLimbo, buildMembers, penCounts, personCounts, type Limbo } from "@/lib/pasture/members"
 import { moo } from "@/lib/pasture/moo"
 import { createPastureScene, type CowSpec, type PastureScene, type PickTarget } from "@/lib/pasture/scene"
-import { PASTURE_TIMEFRAMES, cowID, type Herd, type OpenMode, type Viewer } from "@/lib/pasture/types"
+import { PASTURE_TIMEFRAMES, cowID, type Alarm, type Alarms, type Herd, type OpenMode, type Viewer } from "@/lib/pasture/types"
 import { HoverCard } from "./HoverCard"
 import { Inspector } from "./Inspector"
 import { WhosWho, type WhosWhoPerson } from "./WhosWho"
 import { ScopePicker } from "./ScopePicker"
-import { plural, timeframeLabel } from "./format"
+import { plural, relative, timeframeLabel } from "./format"
 
 /** Past this many the field turns into a stampede and the frame rate goes with it. */
 const HERD_CAP = 300
 /** While the field is open, GitHub is re-read this often so stage changes get their hand-of-god moment. */
 const REFRESH_MS = 60_000
+/** Firing pages are re-read this often; the server caches them for a minute anyway. */
+const ALARM_REFRESH_MS = 60_000
 const STORAGE_KEY = "pasture.settings"
 
 type Settings = { scope: string; days: number; openMode: OpenMode; mooOnMove: boolean }
@@ -64,6 +67,8 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
   const [bubble, setBubble] = useState<{ id: string; text: string; x: number; y: number }>()
   const [focus, setFocus] = useState<string>()
   const [mooing, setMooing] = useState(false)
+  /** Firing pages, each a wolf at the fence. Undefined until the server has answered once. */
+  const [alarms, setAlarms] = useState<Alarm[]>()
   const [now, setNow] = useState(() => Date.now())
 
   const hostRef = useRef<HTMLDivElement>(null)
@@ -162,6 +167,35 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
     }
   }, [ready, load, settings.days])
 
+  // Wolves: the pages that are firing right now. A server with no alarm source
+  // says so once and is not asked again.
+  useEffect(() => {
+    if (!ready) return
+    let cancelled = false
+    let timer: ReturnType<typeof setInterval> | undefined
+    const read = async () => {
+      try {
+        const response = await fetch("/api/alarms", { cache: "no-store" })
+        if (!response.ok) return
+        const body = (await response.json()) as Alarms
+        if (cancelled) return
+        if (!body.configured) {
+          if (timer) clearInterval(timer)
+          return
+        }
+        setAlarms(body.alarms)
+      } catch {
+        // A missed read keeps the wolves where they are.
+      }
+    }
+    void read()
+    timer = setInterval(() => void read(), ALARM_REFRESH_MS)
+    return () => {
+      cancelled = true
+      if (timer) clearInterval(timer)
+    }
+  }, [ready])
+
   // Open PRs that just vanished are held in place until the merged search
   // catches up, so a merge reads as "carried to the merged pen", not "poof".
   useEffect(() => {
@@ -212,6 +246,10 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
   const current = selected ? byId.get(selected) : undefined
   const hoveredCow = hover?.target.kind === "cow" ? byId.get(hover.target.id) : undefined
   const hoveredCritter = hover?.target.kind === "critter" ? critterByID(hover.target.id) : undefined
+  const alarmsByID = useMemo(() => new Map((alarms ?? []).map((alarm) => [alarm.id, alarm])), [alarms])
+  const alarmsRef = useRef(alarmsByID)
+  alarmsRef.current = alarmsByID
+  const hoveredWolf = hover?.target.kind === "wolf" ? alarmsByID.get(alarmIDOf(hover.target.id)) : undefined
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -234,6 +272,11 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
         }
       },
       onOpen: (id) => {
+        if (isWolfID(id)) {
+          const alarm = alarmsRef.current.get(alarmIDOf(id))
+          if (alarm) window.open(alarm.url, "_blank", "noopener")
+          return
+        }
         const member = byIdRef.current.get(id)
         if (member) window.open(member.pr.url, "_blank", "noopener")
       },
@@ -263,6 +306,15 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
       ;(window as unknown as { __pasture?: unknown }).__pasture = { scene, specs }
     }
   }, [specs, data, key, byId, selected])
+  // One wolf per firing page. A new arrival howls, if the bell is on.
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!scene || !alarms) return
+    const arrived = scene.setWolves(alarms.map((alarm) => ({ id: alarm.id, severity: alarm.severity })))
+    if (!arrived.length || !settingsRef.current.mooOnMove) return
+    const critical = arrived.some((id) => alarmsByID.get(alarmIDOf(id))?.severity === "critical")
+    void howl(critical ? 1.1 : 0.9).catch(() => undefined)
+  }, [alarms, alarmsByID])
   useEffect(() => sceneRef.current?.select(selected), [selected])
   useEffect(() => {
     if (!bubble) return
@@ -323,6 +375,7 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
     ].filter(Boolean)
     parts.push(`${open} open${data.openMode === "active" ? ` (touched ${timeframeLabel(data.days)})` : ""}${stages.length ? `: ${stages.join(" · ")}` : ""}`)
     parts.push(plural(people.length, "person", "people"))
+    if (alarms?.length) parts.push(`${plural(alarms.length, "wolf", "wolves")} at the fence`)
     return parts.join(" · ")
   }
 
@@ -401,6 +454,20 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
 
         {hoveredCow && hover && hoveredCow.id !== selected ? (
           <HoverCard member={hoveredCow} collar={collars.get(hoveredCow.author)} avatar={avatars.get(hoveredCow.author) ?? null} x={hover.x} y={hover.y} now={now} scope={settings.scope} />
+        ) : null}
+        {hoveredWolf && hover ? (
+          <div className="hovercard wolf" style={{ left: `${hover.x + 14}px`, top: `${hover.y + 14}px` }}>
+            <div className="who">
+              <span>
+                <strong>Wolf</strong> · {hoveredWolf.severity === "critical" ? "critical page" : "page"}
+                {hoveredWolf.team ? ` · ${hoveredWolf.team}` : ""}
+              </span>
+            </div>
+            <div className="title">{hoveredWolf.title}</div>
+            <div className="meta">
+              {hoveredWolf.group ? `${hoveredWolf.group} · ` : ""}firing since {relative(hoveredWolf.since, now)} · double-click to open in Datadog
+            </div>
+          </div>
         ) : null}
         {hoveredCritter && hover ? (
           <div className="hovercard" style={{ left: `${hover.x + 14}px`, top: `${hover.y + 14}px` }}>

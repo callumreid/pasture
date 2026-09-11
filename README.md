@@ -74,6 +74,24 @@ Without sign-in: set `GITHUB_TOKEN` and everyone who can reach the page sees tha
 the default organization, so put something in front of it. `PASTURE_GH_CLI=1` asks the `gh` CLI
 for a token at request time instead (what the TV installer and local development use).
 
+## Wolves
+
+When somebody is being paged, a wolf comes out of the trees behind the back fence and prowls the
+lane, stopping to stare at the cows. The pets run to Kobi and stay on his heels. Hover the wolf for
+the alarm, double-click to open it in Datadog. When the page clears, the wolf goes back to the
+trees. With the bell on, a new wolf howls.
+
+A wolf is a Datadog monitor that is alerting **and** pages someone: its message notifies the
+on-call handle (`@webhook-IncidentIO-Oncall-Alerts` by default; set `PASTURE_ALARM_NOTIFY` for
+yours). Monitors that only post to Slack, and silent monitors, never make wolves. A monitor that
+alerts per group is one wolf per alerting group. Muted monitors and downtimes are skipped.
+
+Set `DD_API_KEY`, `DD_APP_KEY` (an application key with `monitors_read`) and `DD_SITE` (for
+example `us5.datadoghq.com`) where the server runs: the Vercel project, or the environment of
+`scripts/mini/install.sh`, which passes them to the TV's launchd agent. Without them there are no
+wolves and the field is exactly as before. `PASTURE_ALARMS=fake` gives you a pretend wolf or two
+on a timer for local development.
+
 ## How a cow picks its pen
 
 One stage per PR, the most actionable problem first: draft → in the merge queue → changes
@@ -88,15 +106,15 @@ The hand is for moments, not migrations.
 
 ## Under the hood
 
-Next.js on Vercel, Auth.js for the GitHub sign-in, GitHub's GraphQL search for the herd, three.js
-for the field. Everything on the field is built from primitives and canvas textures; there are no
+Next.js on Vercel, Auth.js for the GitHub sign-in, GitHub's GraphQL search for the herd, Datadog's
+monitor API for the wolves, three.js for the field. Everything on the field is built from primitives and canvas textures; there are no
 model files. A cow is seven meshes sharing one texture atlas per breed (thirty breeds, coats
 painted on the fly, a PR is always the same cow), so a few hundred fit in a frame.
 
 ```bash
 npm run dev         # local dev server
 npm run typecheck   # tsc
-npm test            # vitest: pens, members, breeds, collars, stage derivation
+npm test            # vitest: pens, members, breeds, collars, stage derivation, wolves
 npm run build       # production build
 npm run media       # re-record docs/media/hand-of-god.* from a running dev server
 ```

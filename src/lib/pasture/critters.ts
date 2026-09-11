@@ -2,7 +2,9 @@
  * Everyone on the field who is not a cow: the farmer, and the office pets
  * from #moon-bean-appreciation, who run laps around the pens having a nice time.
  */
-export type CritterKind = "dog" | "cat" | "farmer"
+import type { AlarmSeverity } from "./types"
+
+export type CritterKind = "dog" | "cat" | "farmer" | "wolf"
 
 export type Critter = {
   id: string
@@ -23,6 +25,8 @@ export type Critter = {
   speed: number
   /** Whose heels this one stays on. */
   follows?: string
+  /** Eyes that shine: wolves. */
+  glow?: boolean
 }
 
 export const FARMER_ID = "kobi"
@@ -119,3 +123,40 @@ export const FARMER_LINES = [
   "You've got three unresolved threads and you're poking a farmer?",
   "Queues are lookin' healthy. Your PR isn't.",
 ]
+
+/** What he says instead when there are wolves at the fence. */
+export const WOLF_LINES = [
+  "Wolves at the fence. Who's on call?",
+  "That's a page, not a PR. Go.",
+  "Nobody merges anything until the wolves are gone.",
+  "Check the incident channel. Then check it again.",
+  "The cows can smell it. So can I.",
+  "Don't click me. Click the runbook.",
+]
+
+// ---------------------------------------------------------------- wolves
+
+/** A wolf's critter id is its alarm id behind this prefix, so a pick knows which it is. */
+export const WOLF_PREFIX = "wolf:"
+export const isWolfID = (id: string) => id.startsWith(WOLF_PREFIX)
+export const wolfID = (alarmID: string) => WOLF_PREFIX + alarmID
+export const alarmIDOf = (wolfID: string) => wolfID.slice(WOLF_PREFIX.length)
+
+/** One wolf per firing page. A critical page is a bigger, darker, faster wolf. */
+export function wolfSpec(alarmID: string, severity: AlarmSeverity): Critter {
+  const critical = severity === "critical"
+  return {
+    id: wolfID(alarmID),
+    name: critical ? "Wolf" : "Wolf",
+    kind: "wolf",
+    blurb: critical ? "A big one. Somebody is being paged." : "Prowling the fence. Somebody is being paged.",
+    body: critical ? "#33333a" : "#6b665f",
+    patch: critical ? "#55535b" : "#a39d94",
+    eyes: "#f2c318",
+    size: critical ? 1.08 : 0.92,
+    ears: "point",
+    legs: "regular",
+    speed: critical ? 2.6 : 2.0,
+    glow: true,
+  }
+}

@@ -208,6 +208,12 @@ img {
   border-color: var(--ink);
 }
 
+/* A wolf's card: same card, darker edge, so a page reads differently from a PR. */
+.hovercard.wolf {
+  border-color: #2a2a30;
+  box-shadow: 0 8px 24px rgba(20, 20, 26, 0.35);
+}
+
 /* Kobi's speech bubble, pinned above his hat. */
 .bubble {
   position: absolute;

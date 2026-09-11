@@ -27,6 +27,14 @@ UID_NUM="$(id -u)"
 
 mkdir -p "$AGENTS" "$LOGS"
 
+# Wolves: pass the Datadog keys through when they are set, so the TV shows firing pages.
+WOLF_ENV=""
+for var in DD_API_KEY DD_APP_KEY DD_SITE PASTURE_ALARM_NOTIFY PASTURE_ALARMS; do
+  value="${!var:-}"
+  [ -n "$value" ] && WOLF_ENV+="    <key>$var</key><string>$value</string>
+"
+done
+
 command -v gh >/dev/null || { echo "gh is not installed; the server uses its token" >&2; exit 1; }
 gh auth status >/dev/null 2>&1 || { echo "gh is not signed in; run: gh auth login" >&2; exit 1; }
 
@@ -62,7 +70,7 @@ cat >"$AGENTS/dev.bronson.pasture.plist" <<PLIST
     <key>NODE_ENV</key><string>production</string>
     <key>PASTURE_GH_CLI</key><string>1</string>
     <key>PASTURE_DEFAULT_ORG</key><string>$ORG</string>
-  </dict>
+$WOLF_ENV  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>

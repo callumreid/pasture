@@ -1,11 +1,20 @@
 import * as THREE from "three"
 import { mulberry32, hashString } from "@/lib/rng"
-import { CRITTERS, FARMER_ID, FARMER_LINES, type Critter } from "../critters"
+import { CRITTERS, FARMER_ID, FARMER_LINES, WOLF_LINES, wolfID, wolfSpec, type Critter } from "../critters"
+import type { AlarmSeverity } from "../types"
 import { LANE, lanePoint, towardPens, wrapLane } from "./lane"
 
 const TAU = Math.PI * 2
 
 const mat = (color: string, roughness = 0.9) => new THREE.MeshStandardMaterial({ color, roughness, metalness: 0 })
+/** Eyes: matte for the pets, lit from inside for a wolf. */
+const eyeMat = (spec: Critter, roughness: number) =>
+  spec.glow ? new THREE.MeshStandardMaterial({ color: spec.eyes, emissive: spec.eyes, emissiveIntensity: 1.2, roughness: 0.3, metalness: 0 }) : mat(spec.eyes, roughness)
+
+/** How far off the lane the trees start; a wolf comes from there and goes back to it. */
+const TREELINE = 20
+/** Leaving wolves vanish once they are this far out. */
+const GONE = 17
 
 /** Signed shortest distance along the loop from `a` to `b`, in (-length/2, length/2]. */
 const laneDelta = (a: number, b: number) => wrapLane(b - a + LANE.length / 2) - LANE.length / 2
@@ -71,7 +80,7 @@ function buildDog(spec: Critter): Parts {
   nose.position.set(0, -0.03, 0.57)
   head.add(nose)
   for (const side of [-1, 1]) {
-    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6), mat(spec.eyes, 0.4))
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6), eyeMat(spec, 0.4))
     eye.position.set(side * 0.16, 0.1, 0.3)
     head.add(eye)
     const ear = new THREE.Mesh(new THREE.SphereGeometry(0.19, 10, 8), coat)
@@ -115,6 +124,31 @@ function buildDog(spec: Critter): Parts {
   rig.add(tail)
 
   return { group, rig, head, legs, arms: [], tail, brows: [], top: bodyY + 0.95 }
+}
+
+/** A wolf is a dog with a longer muzzle, a brush of a tail, raised hackles and eyes that shine. */
+function buildWolf(spec: Critter): Parts {
+  const parts = buildDog(spec)
+  const coat = mat(spec.body)
+  const light = mat(spec.patch ?? spec.body)
+  const bodyY = 0.72 + 0.34
+  const muzzle = shadowed(new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.24, 0.52), coat))
+  muzzle.position.set(0, -0.12, 0.48)
+  parts.head.add(muzzle)
+  const jaw = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.08, 0.4), light)
+  jaw.position.set(0, -0.23, 0.44)
+  parts.head.add(jaw)
+  const hackles = shadowed(new THREE.Mesh(new THREE.SphereGeometry(0.46, 12, 10), coat))
+  hackles.scale.set(1, 0.72, 0.9)
+  hackles.position.set(0, bodyY + 0.14, 0.32)
+  parts.rig.add(hackles)
+  if (parts.tail) {
+    const brush = new THREE.Mesh(new THREE.CapsuleGeometry(0.14, 0.5, 4, 8), light)
+    brush.position.set(0, 0.28, -0.3)
+    brush.rotation.x = -1.1
+    parts.tail.add(brush)
+  }
+  return parts
 }
 
 function buildCat(spec: Critter): Parts {
@@ -295,6 +329,8 @@ type Mode = "go" | "rest" | "inspect" | "grumpy"
 type Runner = {
   spec: Critter
   parts: Parts
+  /** Set for a wolf; `leaving` once its alarm has cleared and it is heading back to the trees. */
+  wolf?: { severity: AlarmSeverity; leaving: boolean }
   s: number
   dir: 1 | -1
   offset: number
@@ -316,9 +352,13 @@ type Runner = {
   rand: () => number
 }
 
+export type WolfSpec = { id: string; severity: AlarmSeverity }
+
 export type CritterField = {
   root: THREE.Group
   tick(dt: number, t: number, camera: THREE.Camera): void
+  /** One wolf per alarm; new ones come out of the trees, cleared ones go back. Returns the ids that just arrived. */
+  setWolves(wolves: WolfSpec[]): string[]
   /** Click: the farmer stops and tells you off (returns his line); a pet does a happy hop. */
   poke(id: string): string | undefined
   position(id: string): { x: number; y: number; z: number } | undefined
@@ -331,9 +371,11 @@ export function createCritters(scene: THREE.Scene): CritterField {
   const runners = new Map<string, Runner>()
   let lastLine = -1
 
-  CRITTERS.forEach((spec, index) => {
+  let wolfCount = 0
+
+  function spawn(spec: Critter, s: number): Runner {
     const rand = mulberry32(hashString(spec.id))
-    const parts = spec.kind === "dog" ? buildDog(spec) : spec.kind === "cat" ? buildCat(spec) : buildFarmer(spec)
+    const parts = spec.kind === "dog" ? buildDog(spec) : spec.kind === "cat" ? buildCat(spec) : spec.kind === "wolf" ? buildWolf(spec) : buildFarmer(spec)
     parts.rig.traverse((object) => {
       object.userData.critterID = spec.id
     })
@@ -341,7 +383,7 @@ export function createCritters(scene: THREE.Scene): CritterField {
     const runner: Runner = {
       spec,
       parts,
-      s: (LANE.length / CRITTERS.length) * index + rand() * 8,
+      s,
       dir: rand() < 0.5 ? 1 : -1,
       offset: 0.6 + rand() * 1.4,
       offsetTarget: 0.6 + rand() * 1.4,
@@ -362,7 +404,61 @@ export function createCritters(scene: THREE.Scene): CritterField {
     }
     if (spec.kind === "farmer") runner.dir = 1
     runners.set(spec.id, runner)
+    return runner
+  }
+
+  CRITTERS.forEach((spec, index) => {
+    const rand = mulberry32(hashString(spec.id))
+    spawn(spec, (LANE.length / CRITTERS.length) * index + rand() * 8)
   })
+
+  /** A wolf steps out of the trees behind the back fence and lopes the lane against the farmer. */
+  function spawnWolf(alarmID: string, severity: AlarmSeverity) {
+    const runner = spawn(wolfSpec(alarmID, severity), LANE.width + LANE.depth + Math.random() * LANE.width)
+    runner.wolf = { severity, leaving: false }
+    runner.dir = -1
+    runner.offset = TREELINE
+    runner.offsetTarget = 3.5 + runner.rand() * 2
+    runner.mode = "go"
+    runner.cruise = runner.spec.speed
+    runner.timer = 4 + runner.rand() * 4
+    place(runner, 0)
+    runner.heading = lanePoint(runner.s).heading + Math.PI
+    runner.parts.group.position.set(runner.x, 0, runner.z)
+    runner.parts.group.rotation.y = runner.heading
+    return runner
+  }
+
+  function disposeGroup(group: THREE.Object3D) {
+    group.traverse((object) => {
+      const mesh = object as THREE.Mesh
+      if (mesh.geometry) mesh.geometry.dispose()
+      const material = mesh.material as THREE.Material | THREE.Material[] | undefined
+      if (!material) return
+      for (const item of Array.isArray(material) ? material : [material]) item.dispose()
+    })
+  }
+
+  function remove(runner: Runner) {
+    runners.delete(runner.spec.id)
+    root.remove(runner.parts.group)
+    disposeGroup(runner.parts.group)
+  }
+
+  /** The nearest wolf to a point, for the farmer to glare at. */
+  function nearestWolf(x: number, z: number) {
+    let best: Runner | undefined
+    let bestD = Infinity
+    for (const runner of runners.values()) {
+      if (!runner.wolf) continue
+      const d = (runner.x - x) ** 2 + (runner.z - z) ** 2
+      if (d < bestD) {
+        bestD = d
+        best = runner
+      }
+    }
+    return best
+  }
   // Followers start on their leader's heels, each a little further back.
   let trailing = 0
   for (const runner of runners.values()) {
@@ -390,10 +486,14 @@ export function createCritters(scene: THREE.Scene): CritterField {
     runner.timer -= dt
     runner.hop = Math.max(0, runner.hop - dt * 2.2)
     // Drift sideways a little so they do not all run the same line.
-    if (runner.rand() < dt * 0.3) runner.offsetTarget = 0.5 + runner.rand() * (spec.kind === "farmer" ? 1 : 2.2)
+    if (runner.wolf) {
+      if (!runner.wolf.leaving && runner.rand() < dt * 0.2) runner.offsetTarget = 3 + runner.rand() * 3
+    } else if (runner.rand() < dt * 0.3) runner.offsetTarget = 0.5 + runner.rand() * (spec.kind === "farmer" ? 1 : 2.2)
     runner.offset += (runner.offsetTarget - runner.offset) * Math.min(1, dt * 0.8)
 
-    const leader = spec.follows ? runners.get(spec.follows) : undefined
+    // Followers stay on their leader's heels; when there are wolves, every pet is a follower.
+    const leaderID = spec.follows ?? (runner.gap > 0 && !runner.wolf && spec.kind !== "farmer" ? FARMER_ID : undefined)
+    const leader = leaderID ? runners.get(leaderID) : undefined
     if (leader && runner.mode !== "grumpy") {
       // Stay on the leader's heels: a spot `gap` behind him, with a whim that
       // sometimes sends them darting ahead and drifting back.
@@ -457,14 +557,25 @@ export function createCritters(scene: THREE.Scene): CritterField {
         parts.legs[2].rotation.x = -swing
         const bound = spec.kind === "dog" ? 0.06 + runner.speed * 0.02 : 0.03
         parts.rig.position.y = Math.abs(Math.sin(runner.gait)) * bound
-        parts.head.rotation.x = Math.sin(runner.gait) * 0.08
-        parts.head.rotation.y = Math.sin(t * 1.3 + runner.phase) * 0.2
+        // A wolf lopes low, head down, eyes on the pens.
+        parts.head.rotation.x = runner.wolf ? 0.28 + Math.sin(runner.gait) * 0.06 : Math.sin(runner.gait) * 0.08
+        parts.head.rotation.y = runner.wolf ? Math.sin(t * 0.7 + runner.phase) * 0.35 - 0.25 : Math.sin(t * 1.3 + runner.phase) * 0.2
       }
       if (runner.timer <= 0) {
         const roll = runner.rand()
-        if (spec.kind === "farmer") {
+        if (runner.wolf) {
+          if (runner.wolf.leaving) runner.timer = 99
+          else if (roll < 0.5) {
+            // Stop at the fence and stare.
+            runner.mode = "inspect"
+            runner.timer = 3 + runner.rand() * 5
+          } else {
+            runner.cruise = spec.speed * (0.7 + runner.rand() * 0.8)
+            runner.timer = 3 + runner.rand() * 6
+          }
+        } else if (spec.kind === "farmer") {
           runner.mode = "inspect"
-          runner.timer = 3 + runner.rand() * 4
+          runner.timer = (wolfCount ? 5 : 3) + runner.rand() * 4
         } else if (roll < 0.35) {
           runner.mode = "rest"
           runner.timer = 1.5 + runner.rand() * 4
@@ -489,8 +600,13 @@ export function createCritters(scene: THREE.Scene): CritterField {
       parts.rig.position.y += (0 - parts.rig.position.y) * Math.min(1, dt * 6)
       if (runner.mode === "inspect") {
         const side = lanePoint(runner.s).side
-        runner.heading = lerpAngle(runner.heading, towardPens(side), dt * 3)
-        parts.head.rotation.y = Math.sin(t * 0.9 + runner.phase) * 0.5
+        const wolf = spec.kind === "farmer" && wolfCount ? nearestWolf(runner.x, runner.z) : undefined
+        const face = wolf ? Math.atan2(wolf.x - runner.x, wolf.z - runner.z) : towardPens(side)
+        runner.heading = lerpAngle(runner.heading, face, dt * 3)
+        if (runner.wolf) {
+          parts.head.rotation.x += (0.2 - parts.head.rotation.x) * Math.min(1, dt * 3)
+          parts.head.rotation.y = Math.sin(t * 0.5 + runner.phase) * 0.3
+        } else parts.head.rotation.y = wolf ? 0 : Math.sin(t * 0.9 + runner.phase) * 0.5
       } else if (runner.mode === "grumpy") {
         const face = Math.atan2(camera.position.x - runner.x, camera.position.z - runner.z)
         runner.heading = lerpAngle(runner.heading, face, dt * 5)
@@ -529,8 +645,13 @@ export function createCritters(scene: THREE.Scene): CritterField {
       }
     }
     if (parts.tail) {
-      const wag = spec.kind === "dog" ? Math.sin(t * (runner.mode === "go" ? 16 : 9) + runner.phase) * 0.55 : Math.sin(t * 1.8 + runner.phase) * 0.35
+      const wag = runner.wolf
+        ? Math.sin(t * 1.4 + runner.phase) * 0.12
+        : spec.kind === "dog"
+          ? Math.sin(t * (runner.mode === "go" ? 16 : 9) + runner.phase) * 0.55
+          : Math.sin(t * 1.8 + runner.phase) * 0.35
       parts.tail.rotation.y = wag
+      if (runner.wolf) parts.tail.rotation.x = -0.5
       if (spec.kind === "cat") parts.tail.rotation.x = Math.sin(t * 1.1 + runner.phase) * 0.15
     }
 
@@ -549,7 +670,63 @@ export function createCritters(scene: THREE.Scene): CritterField {
   return {
     root,
     tick(dt, t, camera) {
-      for (const runner of runners.values()) stepRunner(runner, dt, t, camera)
+      for (const runner of runners.values()) {
+        stepRunner(runner, dt, t, camera)
+        if (runner.wolf?.leaving && runner.offset > GONE) remove(runner)
+      }
+    },
+    setWolves(wolves) {
+      const wanted = new Map(wolves.map((wolf) => [wolfID(wolf.id), wolf]))
+      const arrived: string[] = []
+      for (const runner of runners.values()) {
+        if (!runner.wolf || wanted.has(runner.spec.id) || runner.wolf.leaving) continue
+        // Its page has cleared: back to the trees, at a trot.
+        runner.wolf.leaving = true
+        runner.offsetTarget = TREELINE
+        runner.mode = "go"
+        runner.cruise = runner.spec.speed * 1.5
+        runner.timer = 99
+      }
+      for (const [id, wolf] of wanted) {
+        const existing = runners.get(id)
+        if (existing?.wolf) {
+          if (existing.wolf.leaving) {
+            // Fired again before it reached the trees: turn around.
+            existing.wolf.leaving = false
+            existing.offsetTarget = 3.5 + existing.rand() * 2
+            existing.timer = 2
+          }
+          continue
+        }
+        spawnWolf(wolf.id, wolf.severity)
+        arrived.push(id)
+      }
+      wolfCount = wolves.length
+      // The pets run to the farmer and stay there while a wolf is about; afterwards they go back to their laps.
+      let trailing = 0
+      for (const runner of runners.values()) {
+        if (runner.wolf || runner.spec.kind === "farmer") continue
+        if (runner.spec.follows) {
+          trailing++
+          continue
+        }
+        if (wolfCount) {
+          if (runner.gap === 0) {
+            runner.gap = 2.6 + trailing * 2.2
+            runner.hop = 1
+            runner.mode = "go"
+            runner.cruise = runner.spec.speed * 2.2
+            runner.timer = 1
+          }
+          trailing++
+        } else if (runner.gap > 0) {
+          runner.gap = 0
+          runner.mode = "go"
+          runner.cruise = runner.spec.speed
+          runner.timer = 2 + runner.rand() * 4
+        }
+      }
+      return arrived
     },
     poke(id) {
       const runner = runners.get(id)
@@ -557,10 +734,18 @@ export function createCritters(scene: THREE.Scene): CritterField {
       if (runner.spec.id === FARMER_ID) {
         runner.mode = "grumpy"
         runner.timer = 4.5
-        let pick = Math.floor(runner.rand() * FARMER_LINES.length)
-        if (pick === lastLine) pick = (pick + 1) % FARMER_LINES.length
+        const lines = wolfCount ? WOLF_LINES : FARMER_LINES
+        let pick = Math.floor(runner.rand() * lines.length)
+        if (pick === lastLine) pick = (pick + 1) % lines.length
         lastLine = pick
-        return FARMER_LINES[pick]
+        return lines[pick]
+      }
+      if (runner.wolf) {
+        // It does not like that. It stops, and it looks at you.
+        runner.hop = 0.6
+        runner.mode = "inspect"
+        runner.timer = 4
+        return undefined
       }
       runner.hop = 1
       if (runner.mode !== "go") {
@@ -577,13 +762,7 @@ export function createCritters(scene: THREE.Scene): CritterField {
     },
     dispose() {
       scene.remove(root)
-      root.traverse((object) => {
-        const mesh = object as THREE.Mesh
-        if (mesh.geometry) mesh.geometry.dispose()
-        const material = mesh.material as THREE.Material | THREE.Material[] | undefined
-        if (!material) return
-        for (const item of Array.isArray(material) ? material : [material]) item.dispose()
-      })
+      disposeGroup(root)
     },
   }
 }
