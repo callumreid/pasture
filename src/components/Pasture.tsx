@@ -5,6 +5,7 @@ import { assignCollars, collarIndex } from "@/lib/pasture/collars"
 import { FARMER_ID, critterByID } from "@/lib/pasture/critters"
 import { advanceLimbo, buildMembers, penCounts, personCounts, type Limbo } from "@/lib/pasture/members"
 import { moo } from "@/lib/pasture/moo"
+import { primaryReleaseEvent, type ReleaseSnapshot } from "@/lib/pasture/releases"
 import { createPastureScene, type CowSpec, type PastureScene, type PickTarget } from "@/lib/pasture/scene"
 import { PASTURE_TIMEFRAMES, cowID, type Herd, type OpenMode, type Viewer } from "@/lib/pasture/types"
 import { isWolf, wolfID, type AlertSummary } from "@/lib/pasture/wolves"
@@ -13,16 +14,20 @@ import { HoverCard } from "./HoverCard"
 import { Inspector } from "./Inspector"
 import { WhosWho, type WhosWhoPerson } from "./WhosWho"
 import { ScopePicker } from "./ScopePicker"
+import { ReleaseStatus } from "./ReleaseStatus"
 import { plural, relative, timeframeLabel } from "./format"
 
 /** Past this many the field turns into a stampede and the frame rate goes with it. */
 const HERD_CAP = 300
 /** While the field is open, GitHub is re-read this often so stage changes get their hand-of-god moment. */
 const REFRESH_MS = 60_000
+/** Release attempts move faster than pull requests, so integrations get a tighter poll. */
+const RELEASE_REFRESH_MS = 10_000
 const STORAGE_KEY = "pasture.settings"
 
 type Settings = { scope: string; days: number; openMode: OpenMode; mooOnMove: boolean; tour: boolean }
 type Loaded = { key: string; data: Herd }
+type LoadedRelease = { scope: string; data: ReleaseSnapshot }
 
 const settingsKey = (s: Settings) => `${s.scope}|${s.days}|${s.openMode}`
 
@@ -57,7 +62,7 @@ function readStoredSettings(fallback: Settings): Settings {
  * open it on GitHub. When a PR moves stage, the hand of god carries its cow
  * to the right pen.
  */
-export default function Pasture(props: { defaultScope: string; tokenMode: boolean; signOut?: () => Promise<void> }) {
+export default function Pasture(props: { defaultScope: string; tokenMode: boolean; releaseEnabled: boolean; signOut?: () => Promise<void> }) {
   const [settings, setSettings] = useState<Settings>({ scope: props.defaultScope, days: 1, openMode: "active", mooOnMove: false, tour: false })
   const [ready, setReady] = useState(false)
   const [viewer, setViewer] = useState<Viewer>()
@@ -69,6 +74,7 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
   const [selected, setSelected] = useState<string>()
   const [bubble, setBubble] = useState<{ id: string; text: string; x: number; y: number }>()
   const [alerts, setAlerts] = useState<{ home: string | null; count: number; alerts: AlertSummary[] }>({ home: null, count: 0, alerts: [] })
+  const [releases, setReleases] = useState<LoadedRelease>()
   const [weather, setWeather] = useState<Weather | null>(null)
   // `?sky=off` freezes the field at a nice afternoon, for screenshots and films. Read after mount so the server and client agree.
   const [liveSky, setLiveSky] = useState(true)
@@ -180,6 +186,28 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
   alertsRef.current = alertsById
   useEffect(() => sceneRef.current?.setWolves(alerts.alerts), [alerts])
 
+  // Release integrations are optional and organization-scoped. An unconfigured field keeps the original merged-history pasture.
+  const loadReleases = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/releases?scope=${encodeURIComponent(settings.scope)}`, { cache: "no-store" })
+      if (response.status === 401) {
+        window.location.assign("/")
+        return
+      }
+      if (!response.ok) return
+      const body = (await response.json()) as ReleaseSnapshot
+      setReleases({ scope: settings.scope, data: body })
+    } catch {
+      // Keep the last good picture. A release feed outage should not empty the field.
+    }
+  }, [settings.scope])
+  useEffect(() => {
+    if (!ready || !props.releaseEnabled) return
+    void loadReleases()
+    const timer = setInterval(() => void loadReleases(), RELEASE_REFRESH_MS)
+    return () => clearInterval(timer)
+  }, [ready, props.releaseEnabled, loadReleases])
+
   // The sky over the field is San Francisco's: the sun where it really is, the weather as it is.
   useEffect(() => {
     if (!liveSky) return
@@ -244,8 +272,14 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
   }, [now, herd])
 
   const data = herd?.key === key ? herd.data : undefined
+  const releaseFeed = releases?.scope === settings.scope && releases.data.configured ? releases.data : undefined
+  const releaseMode = Boolean(releaseFeed)
+  const releaseEvent = useMemo(() => (releaseFeed ? primaryReleaseEvent(releaseFeed, now) : undefined), [releaseFeed, now])
   const closedIds = useMemo(() => new Set((data?.closed ?? []).map(cowID)), [data])
-  const members = useMemo(() => (data ? buildMembers(data.open, data.merged, limbo, HERD_CAP) : []), [data, limbo])
+  const members = useMemo(
+    () => (data ? buildMembers(data.open, releaseFeed?.waiting ?? data.merged, limbo, HERD_CAP, releaseFeed?.recent ?? [], releaseMode) : []),
+    [data, limbo, releaseFeed, releaseMode],
+  )
   const byId = useMemo(() => new Map(members.map((member) => [member.id, member])), [members])
   const byIdRef = useRef(byId)
   byIdRef.current = byId
@@ -253,7 +287,11 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
   settingsRef.current = settings
   const collars = useMemo(() => assignCollars(members.map((member) => member.author)), [members])
   const counts = useMemo(() => penCounts(members), [members])
-  const avatars = useMemo(() => new Map((data?.people ?? []).map((person) => [person.login, person.avatarUrl])), [data])
+  const avatars = useMemo(() => {
+    const result = new Map((data?.people ?? []).map((person) => [person.login, person.avatarUrl]))
+    for (const member of members) if (!result.has(member.author)) result.set(member.author, member.pr.authorAvatar)
+    return result
+  }, [data, members])
   const people = useMemo<WhosWhoPerson[]>(
     () => [...personCounts(members).keys()].sort().map((login) => ({ login, avatarUrl: avatars.get(login) ?? null, collar: collars.get(login) })),
     [members, avatars, collars],
@@ -275,6 +313,10 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
   const hoveredCow = hover?.target.kind === "cow" ? byId.get(hover.target.id) : undefined
   const hoveredCritter = hover?.target.kind === "critter" && !isWolf(hover.target.id) ? critterByID(hover.target.id) : undefined
   const hoveredWolf = hover?.target.kind === "critter" && isWolf(hover.target.id) ? alertsById.get(hover.target.id) : undefined
+  const releaseModeRef = useRef(releaseMode)
+  releaseModeRef.current = releaseMode
+  const releaseEventRef = useRef(releaseEvent)
+  releaseEventRef.current = releaseEvent
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -317,6 +359,8 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
       },
     })
     sceneRef.current = scene
+    scene.setReleaseMode(releaseModeRef.current)
+    scene.setRelease(releaseEventRef.current)
     if (liveSky) {
       const sun = sunPosition(new Date())
       scene.setSky({ altitude: sun.altitude, azimuth: sun.azimuth, weather: null })
@@ -338,13 +382,14 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
     shownKeyRef.current = key
     // Closed pull requests burn where they stand; the hand of god is not called.
     if (animate) for (const id of closedIds) scene.burn(id)
+    scene.setReleaseMode(releaseMode)
     scene.setCows(specs, animate)
     if (selected && !byId.has(selected)) setSelected(undefined)
     if (process.env.NODE_ENV !== "production") {
       // Dev harness: `__pasture.scene.setCows(specs, true)` from the console plays the hand of god.
       ;(window as unknown as { __pasture?: unknown }).__pasture = { scene, specs }
     }
-  }, [specs, data, key, byId, selected, closedIds])
+  }, [specs, data, key, byId, selected, closedIds, releaseMode])
   useEffect(() => sceneRef.current?.select(selected), [selected])
   useEffect(() => sceneRef.current?.setTour(settings.tour), [settings.tour])
   useEffect(() => {
@@ -363,7 +408,14 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
     }
   }, [bubble?.id, bubble?.text]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => sceneRef.current?.setFilter(focus ? new Set([focus]) : undefined), [focus])
-  useEffect(() => sceneRef.current?.setSign("merged", `Merged, ${timeframeLabel(settings.days)}`), [settings.days])
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!scene) return
+    scene.setReleaseMode(releaseMode)
+    scene.setSign("merged", releaseMode ? "Waiting for release" : `Merged, ${timeframeLabel(settings.days)}`)
+    scene.setSign("recent", "Recently released")
+  }, [releaseMode, settings.days])
+  useEffect(() => sceneRef.current?.setRelease(releaseEvent), [releaseEvent])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -389,14 +441,18 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
   const summary = () => {
     if (!data) return loading ? "Rounding up the herd…" : error ? "The field is empty until GitHub answers." : ""
     const parts: string[] = []
-    const mergedShown = members.filter((member) => member.kind === "merged").length
-    const mergedTotal = data.merged.length
-    const more = data.truncatedMerged ? "+" : ""
-    parts.push(
-      mergedShown < mergedTotal || more
-        ? `${mergedShown} of ${mergedTotal}${more} merged ${timeframeLabel(data.days)}`
-        : `${mergedTotal} merged ${timeframeLabel(data.days)}`,
-    )
+    if (releaseFeed) {
+      parts.push(`${counts.merged} waiting for release · ${counts.recent} released recently`)
+    } else {
+      const mergedShown = members.filter((member) => member.kind === "merged").length
+      const mergedTotal = data.merged.length
+      const more = data.truncatedMerged ? "+" : ""
+      parts.push(
+        mergedShown < mergedTotal || more
+          ? `${mergedShown} of ${mergedTotal}${more} merged ${timeframeLabel(data.days)}`
+          : `${mergedTotal} merged ${timeframeLabel(data.days)}`,
+      )
+    }
     const open = counts.draft + counts.awaiting + counts.changes + counts.ready
     const stages = [
       counts.draft ? plural(counts.draft, "draft") : "",
@@ -522,6 +578,7 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
             🐺 {plural(alerts.count, "alert")} firing
           </a>
         ) : null}
+        {releaseEvent ? <ReleaseStatus event={releaseEvent} /> : null}
         {bubble ? (
           <div className="bubble" style={{ left: `${bubble.x}px`, top: `${bubble.y}px` }} role="status">
             {bubble.text}

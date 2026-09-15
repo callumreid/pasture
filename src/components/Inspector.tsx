@@ -17,6 +17,8 @@ export function Inspector(props: {
   const { member } = props
   const pr = member.pr
   const merged = member.kind === "merged" ? member.pr : undefined
+  const release = member.kind === "merged" ? member.release : undefined
+  const releasedAt = release === "recent" ? merged?.releasedAt : undefined
   const open = member.kind === "open" ? member.pr : undefined
   return (
     <section className="inspector" aria-label="Selected pull request">
@@ -46,9 +48,12 @@ export function Inspector(props: {
 
       {merged ? (
         <>
-          <div className="stage">Merged {absolute(merged.mergedAt)}</div>
+          <div className="stage">
+            {release === "waiting" ? "Waiting for release" : release === "recent" ? `Released ${absolute(releasedAt ?? merged.mergedAt)}` : `Merged ${absolute(merged.mergedAt)}`}
+          </div>
           <div className="row">
-            <span>{relative(merged.mergedAt, props.now)}</span>
+            {releasedAt ? <span>released {relative(releasedAt, props.now)} · </span> : null}
+            <span>merged {relative(merged.mergedAt, props.now)}</span>
             {merged.mergedBy && merged.mergedBy !== merged.author ? <span>· merged by {merged.mergedBy}</span> : null}
             <span>· opened {absolute(merged.createdAt)}</span>
           </div>

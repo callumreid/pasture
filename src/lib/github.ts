@@ -116,10 +116,27 @@ query($q: String!, $cursor: String) {
     pageInfo { hasNextPage endCursor }
     nodes { ... on PullRequest {
       number title url mergedAt createdAt additions deletions changedFiles baseRefName
+      mergeCommit { oid }
       author { login avatarUrl }
       mergedBy { login }
       repository { nameWithOwner isArchived }
       labels(first: 20) { nodes { name } }
+    } }
+  }
+}`
+
+/** Release comparisons only need identity and cow authorship, so keep this much lighter than the main herd query. */
+const RELEASE_MERGED_QUERY = `
+query($q: String!, $cursor: String) {
+  rateLimit { remaining }
+  search(query: $q, type: ISSUE, first: ${MERGED_PAGE}, after: $cursor) {
+    issueCount
+    pageInfo { hasNextPage endCursor }
+    nodes { ... on PullRequest {
+      number title url mergedAt createdAt baseRefName mergeCommit { oid }
+      author { login avatarUrl }
+      mergedBy { login }
+      repository { nameWithOwner isArchived }
     } }
   }
 }`
@@ -181,6 +198,7 @@ type RawMerged = {
   deletions?: number | null
   changedFiles?: number | null
   baseRefName?: string | null
+  mergeCommit?: { oid?: string | null } | null
   author?: RawActor
   mergedBy?: { login?: string | null } | null
   repository: { nameWithOwner: string; isArchived?: boolean | null }
@@ -290,6 +308,7 @@ function toMerged(node: RawMerged): MergedPullRequest {
     changedFiles: node.changedFiles ?? 0,
     base: node.baseRefName ?? "main",
     labels: (node.labels?.nodes ?? []).map((label) => label.name),
+    mergeCommit: node.mergeCommit?.oid ?? undefined,
   }
 }
 
@@ -371,6 +390,21 @@ async function slicedSearch<T extends { number: number; repository: { nameWithOw
 
 /** Shorter windows get finer slices; the cost is one search per slice per refresh. */
 const sliceCount = (days: number) => Math.min(8, Math.max(3, Math.ceil(days * 4)))
+
+/** A compact merged-only search for release comparisons; unlike the herd query it does not fetch open or closed work. */
+export async function fetchRecentMergedPullRequests(token: string, scope: Scope, days = 30, now = Date.now()) {
+  const boundedDays = Math.max(1, Math.min(90, Math.floor(days) || 30))
+  const since = now - boundedDays * 86_400_000
+  const result = await searchAll<RawMerged>(
+    token,
+    RELEASE_MERGED_QUERY,
+    `is:pr is:merged ${scopeQualifier(scope)} merged:>=${stamp(since)} sort:updated-desc`,
+    4,
+    isRawMerged,
+  )
+  const allItems = result.items.map(toMerged).sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt))
+  return { ...result, items: allItems.slice(0, MAX_MERGED), truncated: result.truncated || allItems.length > MAX_MERGED }
+}
 
 /** One cow per pull request: open ones in the window (or all of them) and everything merged in the window. */
 export async function fetchHerd(token: string, input: HerdRequest, now = Date.now()): Promise<Herd> {

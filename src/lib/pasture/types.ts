@@ -63,6 +63,8 @@ export type MergedPullRequest = {
   changedFiles: number
   base: string
   labels: string[]
+  /** GitHub's merge commit, when a caller needs to compare the PR with a deployed SHA. */
+  mergeCommit?: string
 }
 
 /** A pull request closed without merging inside the window: its cow burns. */

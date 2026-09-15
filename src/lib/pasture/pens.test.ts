@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest"
-import { PENS, insidePen, penCenter, penForState } from "./pens"
+import { PENS, RELEASE_PENS, insidePen, penCenter, penForState } from "./pens"
 
 describe("pasture pens", () => {
   test("every stage lands in exactly one pen", () => {
@@ -21,6 +21,17 @@ describe("pasture pens", () => {
         if (other === pen) continue
         expect(insidePen(other.id, centre.x, centre.z)).toBe(false)
       }
+    }
+  })
+
+  test("release mode splits the original rear pasture into equal non-overlapping paddocks", () => {
+    const [waiting, recent] = RELEASE_PENS
+    expect(waiting.rect.x1 - waiting.rect.x0).toBeCloseTo(recent.rect.x1 - recent.rect.x0)
+    expect(waiting.rect.z0).toBe(recent.rect.z0)
+    expect(waiting.rect.z1).toBe(recent.rect.z1)
+    for (const pen of RELEASE_PENS) {
+      const centre = penCenter(pen.id, true)
+      expect(insidePen(pen.id, centre.x, centre.z, 1, true)).toBe(true)
     }
   })
 })

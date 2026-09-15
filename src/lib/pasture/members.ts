@@ -6,7 +6,16 @@ import { cowID, type MergedPullRequest, type OpenPullRequest } from "./types"
 /** One cow on the field: an open pull request in a stage pen, or a merged one out back. */
 export type PastureMember =
   | { id: string; kind: "open"; pen: PenID; breed: Breed; seed: number; author: string; pr: OpenPullRequest; held: boolean }
-  | { id: string; kind: "merged"; pen: "merged"; breed: Breed; seed: number; author: string; pr: MergedPullRequest }
+  | {
+      id: string
+      kind: "merged"
+      pen: "merged" | "recent"
+      release?: "waiting" | "recent"
+      breed: Breed
+      seed: number
+      author: string
+      pr: MergedPullRequest & { releasedAt?: string }
+    }
 
 /**
  * How long a cow whose PR vanished from the open list stays in its pen,
@@ -46,15 +55,25 @@ export function advanceLimbo(
 }
 
 /** Merged first (newest, capped), then live open PRs, then the held ones. Ids are unique; merged wins a tie. */
-export function buildMembers(open: OpenPullRequest[], merged: MergedPullRequest[], limbo: Limbo, cap: number): PastureMember[] {
+export function buildMembers(
+  open: OpenPullRequest[],
+  merged: MergedPullRequest[],
+  limbo: Limbo,
+  cap: number,
+  recent: MergedPullRequest[] = [],
+  releaseMode = false,
+): PastureMember[] {
   const members: PastureMember[] = []
   const seen = new Set<string>()
   const mergedCap = Math.max(0, cap - open.length - limbo.size)
-  for (const pr of merged.slice(0, mergedCap)) {
+  for (const [pr, pen, release] of [
+    ...merged.map((item) => [item, "merged", releaseMode ? "waiting" : undefined] as const),
+    ...recent.map((item) => [item, "recent", "recent"] as const),
+  ].slice(0, mergedCap)) {
     const id = cowID(pr)
     if (seen.has(id)) continue
     seen.add(id)
-    members.push({ id, kind: "merged", pen: "merged", breed: breedFor(pr), seed: cowSeed(pr), author: pr.author, pr })
+    members.push({ id, kind: "merged", pen, release, breed: breedFor(pr), seed: cowSeed(pr), author: pr.author, pr })
   }
   for (const pr of open) {
     const id = cowID(pr)
@@ -80,7 +99,7 @@ export function buildMembers(open: OpenPullRequest[], merged: MergedPullRequest[
 }
 
 export function penCounts(members: PastureMember[]): Record<PenID, number> {
-  const counts: Record<PenID, number> = { draft: 0, awaiting: 0, changes: 0, ready: 0, merged: 0 }
+  const counts: Record<PenID, number> = { draft: 0, awaiting: 0, changes: 0, ready: 0, merged: 0, recent: 0 }
   for (const member of members) counts[member.pen]++
   return counts
 }

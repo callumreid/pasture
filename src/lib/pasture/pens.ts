@@ -1,14 +1,15 @@
 import type { PrState } from "@/lib/pr-state"
 
 /** Where a cow lives: one pen per stage of a pull request's life. */
-export type PenID = "draft" | "awaiting" | "changes" | "ready" | "merged"
+export type PenID = "draft" | "awaiting" | "changes" | "ready" | "merged" | "recent"
 
 export type Rect = { x0: number; x1: number; z0: number; z1: number }
 
 export type Pen = { id: PenID; name: string; rect: Rect }
 
 /**
- * Four small pens across the front of the field, one wide pen behind them.
+ * Four small pens across the front of the field and one wide pen behind them.
+ * A release integration divides that rear pasture into two equal paddocks.
  * The camera looks in from the front (+z), so the lifecycle reads left to
  * right and then "up" into the merged herd.
  */
@@ -20,10 +21,20 @@ export const PENS: Pen[] = [
   { id: "merged", name: "Merged", rect: { x0: -46, x1: 46.2, z0: -34, z1: 3 } },
 ]
 
-export const PEN_ORDER: PenID[] = ["draft", "awaiting", "changes", "ready", "merged"]
+/** The same rear footprint split around the existing centre gap. */
+export const RELEASE_PENS: Pen[] = [
+  { id: "merged", name: "Waiting for release", rect: { x0: -46, x1: -0.6, z0: -34, z1: 3 } },
+  { id: "recent", name: "Recently released", rect: { x0: 0.8, x1: 46.2, z0: -34, z1: 3 } },
+]
 
-export function penFor(id: PenID): Pen {
-  return PENS.find((pen) => pen.id === id) ?? PENS[PENS.length - 1]
+export const PEN_ORDER: PenID[] = ["draft", "awaiting", "changes", "ready", "merged", "recent"]
+
+export function penFor(id: PenID, releaseMode = false): Pen {
+  if (releaseMode) {
+    const releasePen = RELEASE_PENS.find((pen) => pen.id === id)
+    if (releasePen) return releasePen
+  }
+  return PENS.find((pen) => pen.id === id) ?? RELEASE_PENS.find((pen) => pen.id === id) ?? PENS[0]
 }
 
 /** The pen an open pull request grazes in, from its single stage. */
@@ -42,12 +53,12 @@ export function penForState(state: PrState): PenID {
   }
 }
 
-export function penCenter(id: PenID) {
-  const { rect } = penFor(id)
+export function penCenter(id: PenID, releaseMode = false) {
+  const { rect } = penFor(id, releaseMode)
   return { x: (rect.x0 + rect.x1) / 2, z: (rect.z0 + rect.z1) / 2 }
 }
 
-export function insidePen(id: PenID, x: number, z: number, inset = 0) {
-  const { rect } = penFor(id)
+export function insidePen(id: PenID, x: number, z: number, inset = 0, releaseMode = false) {
+  const { rect } = penFor(id, releaseMode)
   return x >= rect.x0 + inset && x <= rect.x1 - inset && z >= rect.z0 + inset && z <= rect.z1 - inset
 }
