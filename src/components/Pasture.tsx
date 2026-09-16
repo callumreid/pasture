@@ -5,7 +5,7 @@ import { assignCollars, collarIndex } from "@/lib/pasture/collars"
 import { FARMER_ID, critterByID } from "@/lib/pasture/critters"
 import { advanceLimbo, buildMembers, penCounts, personCounts, type Limbo } from "@/lib/pasture/members"
 import { moo } from "@/lib/pasture/moo"
-import { createPastureScene, type CowSpec, type PastureScene, type PickTarget } from "@/lib/pasture/scene"
+import { createPastureScene, type CowSpec, type PastureScene, type PickTarget, type UpsidedownStage } from "@/lib/pasture/scene"
 import { PASTURE_TIMEFRAMES, cowID, type Herd, type OpenMode, type Viewer } from "@/lib/pasture/types"
 import { isWolf, wolfID, type AlertSummary } from "@/lib/pasture/wolves"
 import { SAN_FRANCISCO, describeWeather, localClock, sunPosition, type Weather } from "@/lib/sky"
@@ -70,6 +70,7 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
   const [bubble, setBubble] = useState<{ id: string; text: string; x: number; y: number }>()
   const [alerts, setAlerts] = useState<{ home: string | null; count: number; alerts: AlertSummary[] }>({ home: null, count: 0, alerts: [] })
   const [weather, setWeather] = useState<Weather | null>(null)
+  const [upsidedown, setUpsidedown] = useState<UpsidedownStage>()
   // `?sky=off` freezes the field at a nice afternoon, for screenshots and films. Read after mount so the server and client agree.
   const [liveSky, setLiveSky] = useState(true)
   useEffect(() => {
@@ -315,6 +316,7 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
         const member = byIdRef.current.get(id)
         void moo((member?.breed.size ?? 1) * 0.8).catch(() => undefined)
       },
+      onUpsidedown: (stage) => setUpsidedown(stage),
     })
     sceneRef.current = scene
     if (liveSky) {
@@ -322,8 +324,13 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
       scene.setSky({ altitude: sun.altitude, azimuth: sun.azimuth, weather: null })
     }
     // `?ufo=N` sets how often the saucer does the carrying (1 = always); for demos and TVs.
-    const ufo = Number(new URLSearchParams(window.location.search).get("ufo"))
+    const params = new URLSearchParams(window.location.search)
+    const ufo = Number(params.get("ufo"))
     if (Number.isFinite(ufo) && ufo > 0) scene.setUfoOdds(ufo)
+    // `?flipEvery=N` is seconds of tour between upsidedown times (default fifteen minutes); `?flip=1` does one on load.
+    const flipEvery = Number(params.get("flipEvery"))
+    if (Number.isFinite(flipEvery) && flipEvery > 0) scene.setUpsidedownEvery(flipEvery)
+    if (params.get("flip") === "1") window.setTimeout(() => scene.upsidedownNow(), 4000)
     return () => {
       scene.dispose()
       sceneRef.current = undefined
@@ -542,6 +549,12 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
         ) : null}
 
         <div className="hint pill">hover a cow for its PR · click to lift · double-click to open · drag to look around · cows change pens as PRs advance</div>
+        {upsidedown === "title" ? (
+          <div className="upsidedown-title" role="status">
+            UPSIDEDOWN TIME!
+          </div>
+        ) : null}
+        <div className={`blackout${upsidedown === "fade" || upsidedown === "restore" ? " on" : ""}`} aria-hidden="true" />
         {liveSky && ready ? (
           <div className="pill sky" title="The sky over the field is San Francisco's, sun and weather included">
             {SAN_FRANCISCO.name} · {localClock(new Date(now))}

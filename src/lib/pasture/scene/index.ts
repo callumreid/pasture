@@ -11,6 +11,9 @@ import { buildHand, curlHand } from "./hand"
 import { buildUfo, stepUfo, UFO_HOVER } from "./ufo"
 import { POND, buildScenery, inPond } from "./scenery"
 import { createTour } from "./tour"
+import { createUpsidedown, type UpsidedownStage } from "./upsidedown"
+
+export type { UpsidedownStage } from "./upsidedown"
 import type { SkyState } from "./weather"
 
 export type { CowSpec } from "./cow"
@@ -38,6 +41,8 @@ export type PastureEvents = {
   onCarry?(id: string): void
   /** A cow has just caught fire (its pull request was closed). */
   onBurn?(id: string): void
+  /** Upsidedown time is announced, under way, fading out, being put right, or (undefined) over. */
+  onUpsidedown?(stage: UpsidedownStage | undefined): void
 }
 
 export type PastureScene = {
@@ -65,6 +70,10 @@ export type PastureScene = {
   setTour(on: boolean): void
   /** Put the camera exactly here, looking exactly there (for films and screenshots). */
   setCamera(position: [number, number, number], target: [number, number, number]): void
+  /** Seconds of tour between upsidedown times (0 = never). */
+  setUpsidedownEvery(seconds: number): void
+  /** Upsidedown time, right now. */
+  upsidedownNow(): void
   dispose(): void
 }
 
@@ -204,6 +213,12 @@ export function createPastureScene(canvas: HTMLCanvasElement, events: PastureEve
   // Until someone drags or zooms, the camera backs up just enough that all five pens fit across the view.
   let touched = false
   const tour = createTour(camera, controls)
+  const upsidedown = createUpsidedown({
+    camera,
+    target: controls.target,
+    cows: () => cows.values(),
+    onStage: (stage) => events.onUpsidedown?.(stage),
+  })
   controls.addEventListener("start", () => {
     touched = true
     tour.interrupt()
@@ -767,7 +782,9 @@ export function createPastureScene(canvas: HTMLCanvasElement, events: PastureEve
       cloud.position.x += (cloud.userData.speed as number) * dt
       if (cloud.position.x > 120) cloud.position.x = -120
     }
-    if (!tour.tick(dt, t)) controls.update()
+    const touring = tour.tick(dt, t)
+    if (!touring) controls.update()
+    upsidedown.tick(dt, touring)
     if (pointerInside && frame % 2 === 0) {
       const target = pick()
       if (target?.id !== hovered?.id || target?.kind !== hovered?.kind) {
@@ -900,6 +917,12 @@ export function createPastureScene(canvas: HTMLCanvasElement, events: PastureEve
     },
     setTour(on) {
       tour.setEnabled(on)
+    },
+    setUpsidedownEvery(seconds) {
+      upsidedown.setEvery(seconds)
+    },
+    upsidedownNow() {
+      upsidedown.trigger()
     },
     setCamera(position, target) {
       touched = true
