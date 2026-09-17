@@ -300,6 +300,13 @@ img {
   border-color: rgba(192, 57, 43, 0.3);
 }
 
+/* The herd is still up, only older than it should be. */
+.pill.stale {
+  color: var(--ink-2);
+  border-color: rgba(43, 33, 24, 0.2);
+  background: rgba(255, 250, 235, 0.92);
+}
+
 .corner {
   position: absolute;
   left: 14px;

@@ -2,10 +2,16 @@ import "server-only"
 import { derivePrState, type PrCheckState, type PrReviewState } from "@/lib/pr-state"
 import type { ClosedPullRequest, Herd, HerdRequest, MergedPullRequest, OpenPullRequest, Person, Scope, Viewer } from "@/lib/pasture/types"
 import { readWindow, type WindowIO } from "@/lib/search-plan"
+import { FULL_READ_MS, OVERLAP_MS, canTopUp, topUp } from "@/lib/herd-refresh"
+import { RATE_LIMIT_MESSAGE, blockedUntil, budgetOf, isRateLimitError, noteBudget, noteRefusal } from "@/lib/rate-gate"
 
 const ENDPOINT = "https://api.github.com/graphql"
-/** A page of open pull requests carries reviews, threads and checks, so it is kept small. */
-const OPEN_PAGE = 50
+/**
+ * A page of open pull requests carries reviews, threads and checks, so it is
+ * kept small: GitHub answers fifty of them with a 502 or "resource limits
+ * exceeded" on a busy day, and twenty-five reliably, at the same cost per PR.
+ */
+const OPEN_PAGE = 25
 const MERGED_PAGE = 100
 const CLOSED_PAGE = 100
 /** The newest merges kept; a quarter of a busy organization is several thousand. */
@@ -29,11 +35,16 @@ const DAWN = Date.UTC(2008, 0, 1)
 
 export class GitHubError extends Error {
   status: number
-  constructor(message: string, status = 502) {
+  /** For a rate-limit refusal: when GitHub's budget refills, epoch milliseconds, if known. */
+  resetAt?: number
+  constructor(message: string, status = 502, resetAt?: number) {
     super(message)
     this.status = status
+    this.resetAt = resetAt
   }
 }
+
+const rateLimitError = (token: string, until: number) => new GitHubError(RATE_LIMIT_MESSAGE, 429, budgetOf(token)?.resetAt ?? until)
 
 type GraphQLResponse<T> = { data?: T; errors?: { message?: string; type?: string }[] }
 
@@ -57,6 +68,9 @@ async function withSlot<T>(work: () => Promise<T>): Promise<T> {
 /** Two retries for the flaky failures: GitHub 5xx, a dropped socket, or a query that ran out of GitHub's time budget. */
 export async function graphql<T>(token: string, query: string, variables: Record<string, unknown>): Promise<T> {
   for (let attempt = 0; ; attempt++) {
+    // Once GitHub has refused this account for the hour, asking again only fills the log.
+    const until = blockedUntil(token)
+    if (until) throw rateLimitError(token, until)
     try {
       return await withSlot(() => graphqlOnce<T>(token, query, variables))
     } catch (error) {
@@ -82,17 +96,28 @@ async function graphqlOnce<T>(token: string, query: string, variables: Record<st
   if (response.status === 401) throw new GitHubError("GitHub no longer accepts this sign-in. Sign in again.", 401)
   if (!response.ok) {
     const text = await response.text().catch(() => "")
-    const hint = /rate limit/i.test(text) ? "GitHub is rate-limiting this token; the field will catch up in a minute." : text.slice(0, 200)
-    throw new GitHubError(`GitHub ${response.status}: ${hint || response.statusText}`)
+    if (/rate limit/i.test(text)) {
+      const reset = Number(response.headers.get("x-ratelimit-reset"))
+      if (reset) noteBudget(token, 0, reset * 1000)
+      throw rateLimitError(token, noteRefusal(token))
+    }
+    // GitHub's own error pages are HTML; the status is the message.
+    const hint = /^\s*</.test(text) ? "" : text.slice(0, 200)
+    throw new GitHubError(`GitHub ${response.status}${hint ? `: ${hint}` : ` ${response.statusText}`.trimEnd()}`)
   }
-  const parsed = (await response.json()) as GraphQLResponse<T>
+  const parsed = (await response.json()) as GraphQLResponse<T> & { data?: { rateLimit?: { remaining?: number; resetAt?: string } | null } }
   if (parsed.errors?.length) {
     const first = parsed.errors[0]
-    if (first?.type === "RATE_LIMITED") throw new GitHubError("GitHub is rate-limiting this token; the field will catch up in a minute.", 429)
+    if (isRateLimitError(first)) {
+      const until = noteRefusal(token)
+      console.error("[pasture] GitHub refused for lack of budget; holding until", new Date(until).toISOString())
+      throw rateLimitError(token, until)
+    }
     console.error("[pasture] GitHub GraphQL error", first?.message, JSON.stringify(variables).slice(0, 300), query.replace(/\s+/g, " ").slice(0, 160))
     throw new GitHubError(first?.message ?? "GitHub returned an error")
   }
   if (!parsed.data) throw new GitHubError("GitHub returned no data")
+  if (parsed.data.rateLimit) noteBudget(token, parsed.data.rateLimit.remaining, parsed.data.rateLimit.resetAt)
   return parsed.data
 }
 
@@ -123,7 +148,7 @@ export async function fetchViewer(token: string): Promise<Viewer> {
 
 const OPEN_QUERY = `
 query($q: String!, $cursor: String) {
-  rateLimit { remaining }
+  rateLimit { remaining resetAt }
   search(query: $q, type: ISSUE, first: ${OPEN_PAGE}, after: $cursor) {
     issueCount
     pageInfo { hasNextPage endCursor }
@@ -145,7 +170,7 @@ query($q: String!, $cursor: String) {
 
 const MERGED_QUERY = `
 query($q: String!, $cursor: String) {
-  rateLimit { remaining }
+  rateLimit { remaining resetAt }
   search(query: $q, type: ISSUE, first: ${MERGED_PAGE}, after: $cursor) {
     issueCount
     pageInfo { hasNextPage endCursor }
@@ -186,7 +211,7 @@ export async function fetchPullRequestStats(token: string, repo: string, number:
 /** Release comparisons only need identity and cow authorship, so keep this much lighter than the main herd query. */
 const RELEASE_MERGED_QUERY = `
 query($q: String!, $cursor: String) {
-  rateLimit { remaining }
+  rateLimit { remaining resetAt }
   search(query: $q, type: ISSUE, first: ${MERGED_PAGE}, after: $cursor) {
     issueCount
     pageInfo { hasNextPage endCursor }
@@ -201,7 +226,7 @@ query($q: String!, $cursor: String) {
 
 const CLOSED_QUERY = `
 query($q: String!, $cursor: String) {
-  rateLimit { remaining }
+  rateLimit { remaining resetAt }
   search(query: $q, type: ISSUE, first: 100, after: $cursor) {
     issueCount
     pageInfo { hasNextPage endCursor }
@@ -215,7 +240,7 @@ query($q: String!, $cursor: String) {
 /** How many match, and nothing else: the planner's probe. */
 const COUNT_QUERY = `
 query($q: String!) {
-  rateLimit { remaining }
+  rateLimit { remaining resetAt }
   search(query: $q, type: ISSUE, first: 1) { issueCount }
 }`
 
@@ -265,7 +290,7 @@ type RawMerged = {
 }
 
 type SearchPage<T> = {
-  rateLimit?: { remaining?: number }
+  rateLimit?: { remaining?: number; resetAt?: string }
   search: { issueCount: number; pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: (T | Record<string, never>)[] }
 }
 
@@ -441,24 +466,62 @@ export async function fetchRecentMergedPullRequests(token: string, scope: Scope,
   return { ...result, items }
 }
 
-/** One cow per pull request: open ones in the window (or all of them) and everything merged in the window. */
-export async function fetchHerd(token: string, input: HerdRequest, now = Date.now()): Promise<Herd> {
+/** The account's budget as GitHub last reported it, for the herd answer. */
+function budgetFields(token: string) {
+  const budget = budgetOf(token)
+  return { rateLimitRemaining: budget?.remaining, rateLimitResetAt: budget?.resetAt }
+}
+
+/**
+ * One cow per pull request: open ones in the window (or all of them) and
+ * everything merged in the window. Given the previous answer for the same
+ * field, only what merged or closed since then is fetched and folded in (see
+ * herd-refresh); the merged list is read afresh every `FULL_READ_MS`.
+ */
+export async function fetchHerd(token: string, input: HerdRequest, now = Date.now(), previous?: Herd): Promise<Herd> {
   const days = Math.max(1, Math.min(366, Math.floor(input.days) || 1))
   const since = now - days * 86_400_000
   const where = scopeQualifier(input.scope)
   // Search ranges are inclusive and second-precise; a minute of slack covers clock skew with GitHub.
   const until = now + 60_000
   const openBase = `is:pr is:open ${where} sort:updated-desc`
-  const [open, merged, closed] = await Promise.all([
+  const mergedBase = `is:pr is:merged ${where} sort:updated-desc`
+  const closedBase = `is:pr is:closed is:unmerged ${where} sort:updated-desc`
+  const topping = canTopUp(previous, { ...input, days }, now)
+  // A top-up reads only what merged or closed since the last read, reaching back a little for index lag.
+  const historyFrom = topping ? Math.max(since, previous.fetchedAt - OVERLAP_MS) : since
+  // Open pull requests are read every poll, so probing to slice them costs more than paging through
+  // them: a team's few hundred open PRs are one slice read page by page; only thousands get sliced.
+  const openPages = 8
+  const [open, merged, closed, mergedTotal] = await Promise.all([
     input.openMode === "active"
-      ? searchWindow<RawOpen>(token, OPEN_QUERY, openBase, "updated", since, until, isRawOpen, { pageSize: OPEN_PAGE, pages: 2, budget: MAX_OPEN })
-      : searchWindow<RawOpen>(token, OPEN_QUERY, openBase, "created", DAWN, until, isRawOpen, { pageSize: OPEN_PAGE, pages: 2, budget: MAX_OPEN }),
-    searchWindow<RawMerged>(token, MERGED_QUERY, `is:pr is:merged ${where} sort:updated-desc`, "merged", since, until, isRawMerged, { pageSize: MERGED_PAGE, pages: 3, budget: MAX_MERGED }),
+      ? searchWindow<RawOpen>(token, OPEN_QUERY, openBase, "updated", since, until, isRawOpen, { pageSize: OPEN_PAGE, pages: openPages, budget: MAX_OPEN })
+      : searchWindow<RawOpen>(token, OPEN_QUERY, openBase, "created", DAWN, until, isRawOpen, { pageSize: OPEN_PAGE, pages: openPages, budget: MAX_OPEN }),
+    searchWindow<RawMerged>(token, MERGED_QUERY, mergedBase, "merged", historyFrom, until, isRawMerged, { pageSize: MERGED_PAGE, pages: 3, budget: MAX_MERGED }),
     // Closed without merging: these cows burn.
-    searchWindow<RawClosed>(token, CLOSED_QUERY, `is:pr is:closed is:unmerged ${where} sort:updated-desc`, "closed", since, until, isRawClosed, { pageSize: CLOSED_PAGE, pages: 3, budget: MAX_CLOSED }),
+    searchWindow<RawClosed>(token, CLOSED_QUERY, closedBase, "closed", historyFrom, until, isRawClosed, { pageSize: CLOSED_PAGE, pages: 3, budget: MAX_CLOSED }),
+    // A top-up still wants GitHub's count for the whole window; one cheap query.
+    topping ? windowIO(token, MERGED_QUERY, mergedBase, "merged", isRawMerged).count(since, until) : Promise.resolve(undefined),
   ])
   const closedItems: ClosedPullRequest[] = closed.items.map((node) => ({ repo: node.repository.nameWithOwner, number: node.number, closedAt: node.closedAt }))
   const openItems = open.items.map(toOpen).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+  if (topping) {
+    return topUp(
+      previous,
+      {
+        open: openItems,
+        merged: merged.items.map(toMerged),
+        closed: closedItems,
+        mergedTotal,
+        truncatedOpen: open.truncated || undefined,
+        truncatedMerged: merged.truncated || undefined,
+        ...budgetFields(token),
+      },
+      now,
+      since,
+      MAX_MERGED,
+    )
+  }
   const mergedAll = merged.items.map(toMerged).sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt))
   const mergedItems = mergedAll.slice(0, MAX_MERGED)
   const people = new Map<string, Person>()
@@ -467,12 +530,12 @@ export async function fetchHerd(token: string, input: HerdRequest, now = Date.no
   }
   // Thousands of merged cows: their avatars are in `people`, so the answer carries each once.
   for (const pr of mergedItems) pr.authorAvatar = null
-  const least = (...values: (number | undefined)[]) => values.reduce<number | undefined>((min, v) => (v === undefined ? min : Math.min(min ?? Infinity, v)), undefined)
   return {
     scope: input.scope,
     days,
     openMode: input.openMode,
     fetchedAt: now,
+    fullReadAt: now,
     open: openItems,
     merged: mergedItems,
     closed: closedItems,
@@ -480,6 +543,8 @@ export async function fetchHerd(token: string, input: HerdRequest, now = Date.no
     truncatedOpen: open.truncated || undefined,
     truncatedMerged: merged.truncated || mergedAll.length > MAX_MERGED || undefined,
     mergedTotal: merged.total,
-    rateLimitRemaining: least(merged.remaining, open.remaining, closed.remaining),
+    ...budgetFields(token),
   }
 }
+
+export { FULL_READ_MS }

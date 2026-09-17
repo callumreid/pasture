@@ -18,6 +18,14 @@ import { ScopePicker } from "./ScopePicker"
 import { ReleaseStatus } from "./ReleaseStatus"
 import { plural, relative, timeframeLabel } from "./format"
 
+/** Why the herd on the field is older than it should be, for the pill in the corner. */
+function staleLabel(stale: NonNullable<Herd["stale"]>, fetchedAt: number, now: number) {
+  const age = relative(new Date(fetchedAt).toISOString(), now)
+  const back = stale.resetAt && stale.resetAt > now ? ` · back in ${Math.max(1, Math.ceil((stale.resetAt - now) / 60_000))}m` : ""
+  const why = /rate limit|hourly limit|budget/i.test(stale.reason) ? "GitHub's hourly limit is spent" : "GitHub is not answering"
+  return `${why} · showing the herd from ${age}${back}`
+}
+
 /** Every open cow plus the newest merges up to this; the server keeps ten thousand merges at most, and the merged herd is instanced so thousands are fine. */
 const HERD_CAP = 12_000
 /** While the field is open, GitHub is re-read this often so stage changes get their hand-of-god moment. */
@@ -572,6 +580,12 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
         {error ? (
           <div className="notice">
             <span className="pill danger">{error}</span>
+          </div>
+        ) : data?.stale ? (
+          <div className="notice">
+            <span className="pill stale" title={data.stale.reason}>
+              {staleLabel(data.stale, data.fetchedAt, now)}
+            </span>
           </div>
         ) : null}
         {data && !error && members.length === 0 ? (

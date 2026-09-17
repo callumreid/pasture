@@ -95,6 +95,12 @@ export type Herd = {
   /** How many pull requests GitHub says merged in the window, fetched or not. */
   mergedTotal?: number
   rateLimitRemaining?: number
+  /** When GitHub said the account's hourly budget refills, epoch milliseconds. */
+  rateLimitResetAt?: number
+  /** When the merged and closed lists were last read in full rather than topped up (see herd-refresh). */
+  fullReadAt?: number
+  /** GitHub could not be asked this time; this is the last good herd, kept until it can. */
+  stale?: { reason: string; resetAt?: number }
 }
 
 export type OrgSummary = { login: string; name: string | null; avatarUrl: string | null }

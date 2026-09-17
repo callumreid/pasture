@@ -77,6 +77,8 @@ at once is what made a big window slow.
 Go to **[pasture-six.vercel.app](https://pasture-six.vercel.app)** and sign in with GitHub. Pick
 your organization at the top left (or "just my PRs"), pick a window (24 hours by default), and
 leave it open. The field re-reads GitHub every minute, so cows change pens as your PRs advance.
+Open pull requests are read in full each time; the merged herd is read once and then only topped
+up with what merged since, so a 90-day field costs GitHub about as much as a one-day one.
 
 Two things to know:
 
@@ -104,6 +106,12 @@ laptop from sleeping while it feeds the TV. `scripts/mini/pasture-tv off` hides 
 and `on` brings it back; re-run the installer after a `git pull` to rebuild and restart. Add
 `PASTURE_RELEASE_GITHUB=1` to the installer command to enable the optional release pasture using
 the same `gh` login.
+
+GitHub gives each account five thousand GraphQL points an hour, and every TV, script and agent
+signed in as that account shares them. One field on a 24-hour window uses a few hundred an hour;
+a second kiosk on the same login doubles that. If the hour's budget runs out, the field keeps
+the last herd it read (on disk too, so a rebuild does not lose it), says so in the corner, and
+catches up when the budget resets rather than emptying the pens.
 
 ## Run your own
 
