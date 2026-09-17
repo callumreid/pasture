@@ -49,6 +49,14 @@ calendar feeds (`PASTURE_EVENTS_ICS`: a Luma calendar's feed, a public Google Ca
 hand-written list (`PASTURE_EVENTS`), on the home organization's field. `?party=1` throws the
 doors open for a look.
 
+An optional [release integration](docs/release-integrations.md) can replace the merged-history
+herd with what is actually waiting to be released. The large back pasture divides evenly into
+**waiting for release** and **recently released**, and an active release changes the weather while
+a service-labelled mothership gathers over the field. Pasture can observe GitHub Deployments with
+the same credential it already uses for pull requests, or consume a small provider-neutral JSON
+feed for other release systems. With no release source configured, the original
+merged-within-the-timeframe field is unchanged.
+
 When a Datadog monitor goes into alert, a wolf comes out of the trees and prowls the fence line
 until it clears. One wolf per firing alert (up to eight); hover one for the monitor's name, click
 it to open the monitor. When an alert clears, Moon or Bean chases the wolf off. Wolves only show on the home organization's field, to its members.
@@ -93,7 +101,9 @@ PASTURE_DEFAULT_ORG=your-org PASTURE_AWAKE=1 scripts/mini/install.sh
 
 Then Control Center → Screen Mirroring → your TV, or an HDMI cable. `PASTURE_AWAKE=1` keeps a
 laptop from sleeping while it feeds the TV. `scripts/mini/pasture-tv off` hides the kiosk window
-and `on` brings it back; re-run the installer after a `git pull` to rebuild and restart.
+and `on` brings it back; re-run the installer after a `git pull` to rebuild and restart. Add
+`PASTURE_RELEASE_GITHUB=1` to the installer command to enable the optional release pasture using
+the same `gh` login.
 
 ## Run your own
 
@@ -110,6 +120,12 @@ and `on` brings it back; re-run the installer after a `git pull` to rebuild and 
 Wolves need Datadog: `DD_API_KEY`, `DD_APP_KEY` (an application key with `monitors_read`) and
 `DD_SITE`. `DD_MONITOR_QUERY` narrows which monitors count (default `status:alert`). Leave them
 unset and there are no wolves.
+
+For release weather and release paddocks, set `PASTURE_RELEASE_GITHUB=1`. Pasture then discovers
+production-like GitHub environments and polls their deployment ledger with the same GitHub token;
+`PASTURE_RELEASE_GITHUB_REPOS` can narrow a large organization. An HTTP feed remains available for
+systems whose release truth is not visible in GitHub. See
+[release integrations](docs/release-integrations.md) for both options.
 
 Without sign-in: set `GITHUB_TOKEN` and everyone who can reach the page sees that token's view of
 the default organization, so put something in front of it. `PASTURE_GH_CLI=1` asks the `gh` CLI

@@ -22,7 +22,13 @@ export function HoverCard(props: { member: PastureMember; collar: string | undef
       <div className="title">{member.pr.title}</div>
       <div className="meta">
         {repoShort(member.pr.repo, props.scope)}#{member.pr.number} ·{" "}
-        {member.kind === "merged" ? `merged ${relative(member.pr.mergedAt, props.now)}` : `${openDetail(member.pr)} · updated ${relative(member.pr.updatedAt, props.now)}`}
+        {member.kind === "merged"
+          ? member.release === "waiting"
+            ? `waiting for release · merged ${relative(member.pr.mergedAt, props.now)}`
+            : member.release === "recent"
+              ? `released ${relative(member.pr.releasedAt ?? member.pr.mergedAt, props.now)}`
+              : `merged ${relative(member.pr.mergedAt, props.now)}`
+          : `${openDetail(member.pr)} · updated ${relative(member.pr.updatedAt, props.now)}`}
       </div>
     </div>
   )

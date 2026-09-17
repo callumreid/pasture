@@ -1,6 +1,7 @@
 import * as THREE from "three"
 import { mulberry32 } from "@/lib/rng"
 import { skyLook, type Weather } from "@/lib/sky"
+import type { ReleasePhase } from "../releases"
 
 /**
  * The sky over the field, driven by the real sun and weather: the sun and its
@@ -12,6 +13,8 @@ export type SkyState = { altitude: number; azimuth: number; weather: Weather | n
 
 export type SkyRig = {
   set(state: SkyState): void
+  /** Let a release event temporarily overrule the ordinary San Francisco mood. */
+  setRelease(phase: ReleasePhase | undefined): void
   tick(t: number, dt: number): void
   dispose(): void
 }
@@ -67,6 +70,17 @@ export function createSkyRig(parts: SkyParts): SkyRig {
   let wind = 1
   let rainAmount = 0
   let rainTarget = 0
+  let release: ReleasePhase | undefined
+
+  const releaseLook: Record<ReleasePhase, { color: string; amount: number }> = {
+    scheduled: { color: "#54407a", amount: 0.36 },
+    queued: { color: "#443368", amount: 0.46 },
+    testing: { color: "#334a64", amount: 0.5 },
+    deploying: { color: "#301548", amount: 0.68 },
+    verifying: { color: "#253e58", amount: 0.62 },
+    succeeded: { color: "#2f715e", amount: 0.36 },
+    failed: { color: "#762b3b", amount: 0.7 },
+  }
 
   const apply = () => {
     const look = skyLook(state.altitude)
@@ -102,7 +116,7 @@ export function createSkyRig(parts: SkyParts): SkyRig {
     ambient.intensity = 0.12 + look.ambient * 0.18
     ;(stars.material as THREE.PointsMaterial).opacity = look.stars * (1 - cover)
     // Clouds: how many show, and how bright they are.
-    const shown = Math.round(2 + cover * (clouds.length - 2))
+    const shown = release ? Math.max(9, Math.round(2 + cover * (clouds.length - 2))) : Math.round(2 + cover * (clouds.length - 2))
     clouds.forEach((cloud, i) => {
       cloud.visible = i < shown
     })
@@ -110,6 +124,16 @@ export function createSkyRig(parts: SkyParts): SkyRig {
     cloudMaterial.color.copy(cloudTone)
     cloudMaterial.emissive.copy(cloudTone)
     cloudMaterial.emissiveIntensity = state.altitude > 0 ? 0.3 * (1 - gloom) : 0.05
+    if (release) {
+      const mood = releaseLook[release]
+      const color = new THREE.Color(mood.color)
+      background.lerp(color, mood.amount)
+      fog.color.lerp(color, mood.amount * 0.8)
+      cloudMaterial.color.lerp(color, mood.amount * 0.72)
+      cloudMaterial.emissive.copy(cloudMaterial.color)
+      hemisphere.color.lerp(color, mood.amount * 0.45)
+      ambient.intensity *= 1 - mood.amount * 0.3
+    }
     // Rain or snow.
     const kind = weather?.precipitation ?? "none"
     rainTarget = kind === "none" ? 0 : Math.min(1, 0.35 + (weather?.intensity ?? 0) * 0.5)
@@ -122,6 +146,10 @@ export function createSkyRig(parts: SkyParts): SkyRig {
   return {
     set(next) {
       state = next
+      apply()
+    },
+    setRelease(phase) {
+      release = phase
       apply()
     },
     tick(t, dt) {

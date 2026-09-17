@@ -13,8 +13,15 @@ export const MAX_MERGED = 10_000
 /** Open pull requests kept, in either mode. */
 const MAX_OPEN = 3000
 const MAX_CLOSED = 2000
-/** Concurrent searches per herd read. Three searches run at once, so GitHub sees up to three times this. */
-const PARALLEL = 12
+/** Concurrent searches per herd read; `MAX_INFLIGHT` caps the whole process regardless. */
+const PARALLEL = 8
+/**
+ * GitHub answers each GraphQL query inside a fixed time budget and fails it with "Resource limits
+ * for this query exceeded" when a burst of heavy searches makes it slow, so however many readers
+ * are refreshing at once (the herd's three searches, the release observer), this many requests
+ * are in flight per process at most.
+ */
+const MAX_INFLIGHT = 8
 /** Slices are never split narrower than this. */
 const MIN_SLICE_MS = 15 * 60_000
 /** GitHub has no pull requests before this; the floor for "every open PR, however old". */
@@ -30,18 +37,34 @@ export class GitHubError extends Error {
 
 type GraphQLResponse<T> = { data?: T; errors?: { message?: string; type?: string }[] }
 
-const RETRYABLE = /timeout|something went wrong|\b50[234]\b/i
+const RETRYABLE = /timeout|something went wrong|resource limits|\b50[234]\b/i
 
-/** One retry for the flaky failures: GitHub 5xx, a dropped socket, or a search that timed out server-side. */
-export async function graphql<T>(token: string, query: string, variables: Record<string, unknown>): Promise<T> {
+let inflight = 0
+const waiting: (() => void)[] = []
+
+/** Run `work` once fewer than `MAX_INFLIGHT` requests are in flight. */
+async function withSlot<T>(work: () => Promise<T>): Promise<T> {
+  if (inflight >= MAX_INFLIGHT) await new Promise<void>((resolve) => waiting.push(resolve))
+  inflight++
   try {
-    return await graphqlOnce<T>(token, query, variables)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    const status = error instanceof GitHubError ? error.status : 0
-    if (status === 401 || status === 429 || (status && status < 500 && !RETRYABLE.test(message))) throw error
-    await new Promise((resolve) => setTimeout(resolve, 700))
-    return graphqlOnce<T>(token, query, variables)
+    return await work()
+  } finally {
+    inflight--
+    waiting.shift()?.()
+  }
+}
+
+/** Two retries for the flaky failures: GitHub 5xx, a dropped socket, or a query that ran out of GitHub's time budget. */
+export async function graphql<T>(token: string, query: string, variables: Record<string, unknown>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await withSlot(() => graphqlOnce<T>(token, query, variables))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const status = error instanceof GitHubError ? error.status : 0
+      if (attempt >= 2 || status === 401 || status === 429 || (status && status < 500 && !RETRYABLE.test(message))) throw error
+      await new Promise((resolve) => setTimeout(resolve, 700 * (attempt + 1) + (/resource limits/i.test(message) ? 1500 : 0)))
+    }
   }
 }
 
@@ -66,6 +89,7 @@ async function graphqlOnce<T>(token: string, query: string, variables: Record<st
   if (parsed.errors?.length) {
     const first = parsed.errors[0]
     if (first?.type === "RATE_LIMITED") throw new GitHubError("GitHub is rate-limiting this token; the field will catch up in a minute.", 429)
+    console.error("[pasture] GitHub GraphQL error", first?.message, JSON.stringify(variables).slice(0, 300), query.replace(/\s+/g, " ").slice(0, 160))
     throw new GitHubError(first?.message ?? "GitHub returned an error")
   }
   if (!parsed.data) throw new GitHubError("GitHub returned no data")
@@ -104,7 +128,7 @@ query($q: String!, $cursor: String) {
     issueCount
     pageInfo { hasNextPage endCursor }
     nodes { ... on PullRequest {
-      number title url isDraft createdAt updatedAt additions deletions changedFiles baseRefName headRefName
+      number title url isDraft createdAt updatedAt baseRefName headRefName
       author { login avatarUrl }
       repository { nameWithOwner isArchived }
       reviewDecision mergeStateStatus isInMergeQueue autoMergeRequest { enabledAt }
@@ -127,6 +151,7 @@ query($q: String!, $cursor: String) {
     pageInfo { hasNextPage endCursor }
     nodes { ... on PullRequest {
       number title url mergedAt createdAt baseRefName
+      mergeCommit { oid }
       author { login avatarUrl }
       mergedBy { login }
       repository { nameWithOwner isArchived }
@@ -137,8 +162,9 @@ query($q: String!, $cursor: String) {
 
 /**
  * The diff of one pull request. Asking for additions and deletions makes a
- * page of a hundred merged pull requests three times slower, so the herd is
- * read without them and a lifted cow's are fetched on their own.
+ * page of pull requests three times slower and pushes a busy search past
+ * GitHub's time budget for one query, so the herd is read without them and a
+ * lifted cow's are fetched on their own.
  */
 const STATS_QUERY = `
 query($owner: String!, $name: String!, $number: Int!) {
@@ -156,6 +182,22 @@ export async function fetchPullRequestStats(token: string, repo: string, number:
   const pr = data.repository?.pullRequest
   return pr ? { additions: pr.additions ?? 0, deletions: pr.deletions ?? 0, changedFiles: pr.changedFiles ?? 0 } : undefined
 }
+
+/** Release comparisons only need identity and cow authorship, so keep this much lighter than the main herd query. */
+const RELEASE_MERGED_QUERY = `
+query($q: String!, $cursor: String) {
+  rateLimit { remaining }
+  search(query: $q, type: ISSUE, first: ${MERGED_PAGE}, after: $cursor) {
+    issueCount
+    pageInfo { hasNextPage endCursor }
+    nodes { ... on PullRequest {
+      number title url mergedAt createdAt baseRefName mergeCommit { oid }
+      author { login avatarUrl }
+      mergedBy { login }
+      repository { nameWithOwner isArchived }
+    } }
+  }
+}`
 
 const CLOSED_QUERY = `
 query($q: String!, $cursor: String) {
@@ -191,9 +233,6 @@ type RawOpen = {
   isDraft: boolean
   createdAt: string
   updatedAt: string
-  additions?: number | null
-  deletions?: number | null
-  changedFiles?: number | null
   baseRefName?: string | null
   headRefName?: string | null
   author?: RawActor
@@ -218,6 +257,7 @@ type RawMerged = {
   mergedAt: string
   createdAt: string
   baseRefName?: string | null
+  mergeCommit?: { oid?: string | null } | null
   author?: RawActor
   mergedBy?: { login?: string | null } | null
   repository: { nameWithOwner: string; isArchived?: boolean | null }
@@ -302,9 +342,6 @@ function toOpen(node: RawOpen): OpenPullRequest {
     autoMerge: !!node.autoMergeRequest,
     reRequested,
     reviewers,
-    additions: node.additions ?? 0,
-    deletions: node.deletions ?? 0,
-    changedFiles: node.changedFiles ?? 0,
     base: node.baseRefName ?? "main",
     head: node.headRefName ?? "",
     labels: (node.labels?.nodes ?? []).map((label) => label.name),
@@ -324,6 +361,7 @@ function toMerged(node: RawMerged): MergedPullRequest {
     mergedBy: node.mergedBy?.login ?? null,
     base: node.baseRefName ?? "main",
     labels: (node.labels?.nodes ?? []).map((label) => label.name),
+    mergeCommit: node.mergeCommit?.oid ?? undefined,
   }
 }
 
@@ -384,6 +422,23 @@ async function searchWindow<T extends Keyed>(
     items.push(item)
   }
   return { items, total: result.total, truncated: result.truncated, remaining: result.remaining }
+}
+
+/**
+ * A compact merged-only search for release comparisons: the pull requests whose merge commits
+ * might sit between production deployments. Unlike the herd query it fetches no open or closed
+ * work, and it stops at the newest thousand.
+ */
+export async function fetchRecentMergedPullRequests(token: string, scope: Scope, days = 30, now = Date.now()) {
+  const boundedDays = Math.max(1, Math.min(90, Math.floor(days) || 30))
+  const since = now - boundedDays * 86_400_000
+  const result = await searchWindow<RawMerged>(token, RELEASE_MERGED_QUERY, `is:pr is:merged ${scopeQualifier(scope)} sort:updated-desc`, "merged", since, now + 60_000, isRawMerged, {
+    pageSize: MERGED_PAGE,
+    pages: 3,
+    budget: 1000,
+  })
+  const items = result.items.map(toMerged).sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt))
+  return { ...result, items }
 }
 
 /** One cow per pull request: open ones in the window (or all of them) and everything merged in the window. */

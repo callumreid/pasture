@@ -60,7 +60,7 @@ describe("pasture members", () => {
       ["coval-ai/backend#3", "changes"],
       ["coval-ai/backend#4", "awaiting"],
     ])
-    expect(penCounts(members)).toEqual({ draft: 1, awaiting: 1, changes: 1, ready: 1, merged: 1 })
+    expect(penCounts(members)).toEqual({ draft: 1, awaiting: 1, changes: 1, ready: 1, merged: 1, recent: 0 })
   })
 
   test("a PR listed both open and merged is one cow, in the merged pen, with the same coat", () => {
@@ -78,6 +78,15 @@ describe("pasture members", () => {
     expect(members).toHaveLength(5)
     expect(members.filter((m) => m.kind === "open")).toHaveLength(2)
     expect(members.filter((m) => m.kind === "merged").map((m) => m.pr.number)).toEqual([100, 101, 102])
+  })
+
+  test("a release feed keeps waiting and recently released work in separate paddocks", () => {
+    const members = buildMembers([open(1)], [merged(9)], new Map(), 150, [merged(10)], true)
+    expect(members.map((member) => [member.id, member.pen, member.kind === "merged" ? member.release : undefined])).toEqual([
+      ["coval-ai/backend#9", "merged", "waiting"],
+      ["coval-ai/backend#10", "recent", "recent"],
+      ["coval-ai/backend#1", "awaiting", undefined],
+    ])
   })
 
   test("a vanished open PR is held until it shows up merged or times out", () => {

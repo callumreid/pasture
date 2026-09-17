@@ -40,9 +40,10 @@ export type OpenPullRequest = {
   reRequested: boolean
   /** Logins (or team names) whose review is still requested. */
   reviewers: string[]
-  additions: number
-  deletions: number
-  changedFiles: number
+  /** Not in a herd answer: a lifted cow fetches its diff from /api/pr. */
+  additions?: number
+  deletions?: number
+  changedFiles?: number
   base: string
   head: string
   labels: string[]
@@ -65,6 +66,8 @@ export type MergedPullRequest = {
   changedFiles?: number
   base: string
   labels: string[]
+  /** GitHub's merge commit, when a caller needs to compare the PR with a deployed SHA. */
+  mergeCommit?: string
 }
 
 /** A pull request closed without merging inside the window: its cow burns. */

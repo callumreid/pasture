@@ -18,6 +18,10 @@ PORT="${PASTURE_PORT:-3517}"
 # Chrome's debugging port for the kiosk, loopback only: scripts/mini/tv-shot.mjs screenshots the TV through it.
 TV_DEBUG_PORT="${PASTURE_TV_DEBUG_PORT:-9333}"
 ORG="${PASTURE_DEFAULT_ORG:-coval-ai}"
+RELEASE_GITHUB="${PASTURE_RELEASE_GITHUB:-0}"
+RELEASE_REPOS="${PASTURE_RELEASE_GITHUB_REPOS:-}"
+RELEASE_PRODUCTION_PATTERN="${PASTURE_RELEASE_GITHUB_PRODUCTION_PATTERN:-}"
+RELEASE_SCOPES="${PASTURE_RELEASE_SCOPES:-$ORG}"
 AGENTS="$HOME/Library/LaunchAgents"
 LOGS="$HOME/Library/Logs"
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -62,6 +66,10 @@ cat >"$AGENTS/dev.bronson.pasture.plist" <<PLIST
     <key>NODE_ENV</key><string>production</string>
     <key>PASTURE_GH_CLI</key><string>1</string>
     <key>PASTURE_DEFAULT_ORG</key><string>$ORG</string>
+    <key>PASTURE_RELEASE_GITHUB</key><string>$RELEASE_GITHUB</string>
+    <key>PASTURE_RELEASE_GITHUB_REPOS</key><string>$RELEASE_REPOS</string>
+    <key>PASTURE_RELEASE_GITHUB_PRODUCTION_PATTERN</key><string>$RELEASE_PRODUCTION_PATTERN</string>
+    <key>PASTURE_RELEASE_SCOPES</key><string>$RELEASE_SCOPES</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

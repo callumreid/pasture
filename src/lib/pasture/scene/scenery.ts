@@ -1,6 +1,6 @@
 import * as THREE from "three"
 import { mulberry32 } from "@/lib/rng"
-import { MERGED_BASE, PENS, type PenID } from "../pens"
+import { MERGED_BASE, PENS, RELEASE_PENS, type PenID } from "../pens"
 import { groundTexture, paintSign, type Sign } from "./atlas"
 import { createSkyRig, type SkyRig } from "./weather"
 import { buildBackdrop } from "./backdrop"
@@ -24,6 +24,8 @@ export type Scenery = {
   setBackFence(z0: number): void
   /** How far back the barn has moved from where it was built. */
   backOffset(): number
+  /** The release paddock does not exist visually until an integration is active. */
+  setPenVisible(pen: PenID, visible: boolean): void
   /** World position of John Pork's head, for labels. */
   porkPosition(): THREE.Vector3
   /** The barn doors and the disco ball. */
@@ -226,10 +228,11 @@ function buildRocks(scene: THREE.Scene) {
 function buildFences(scene: THREE.Scene) {
   const wood = new THREE.MeshStandardMaterial({ color: "#9c6f3a", roughness: 0.95 })
   const spacing = 3
-  const posts: THREE.Matrix4[] = []
-  const rails: THREE.Matrix4[] = []
   const up = new THREE.Vector3(0, 1, 0)
+  const meshes: THREE.InstancedMesh[] = []
   for (const pen of PENS) {
+    const posts: THREE.Matrix4[] = []
+    const rails: THREE.Matrix4[] = []
     const { x0, x1, z0, z1 } = pen.rect
     const sides: Array<{ from: [number, number]; to: [number, number] }> = [
       { from: [x0, z0], to: [x1, z0] },
@@ -256,21 +259,23 @@ function buildFences(scene: THREE.Scene) {
         }
       }
     }
+    const postMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.2, 1.15, 0.2), wood, posts.length)
+    posts.forEach((m, i) => postMesh.setMatrixAt(i, m))
+    const railMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(spacing, 0.09, 0.07), wood, rails.length)
+    rails.forEach((m, i) => railMesh.setMatrixAt(i, m))
+    postMesh.castShadow = true
+    railMesh.castShadow = true
+    scene.add(postMesh, railMesh)
+    meshes.push(postMesh, railMesh)
   }
-  const postMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.2, 1.15, 0.2), wood, posts.length)
-  posts.forEach((m, i) => postMesh.setMatrixAt(i, m))
-  const railMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(spacing, 0.09, 0.07), wood, rails.length)
-  rails.forEach((m, i) => railMesh.setMatrixAt(i, m))
-  postMesh.castShadow = true
-  railMesh.castShadow = true
-  scene.add(postMesh, railMesh)
   return {
+    /** The merged pen's back fence moved: these fences are rebuilt from the pens. */
     dispose() {
-      scene.remove(postMesh, railMesh)
-      postMesh.geometry.dispose()
-      railMesh.geometry.dispose()
-      postMesh.dispose()
-      railMesh.dispose()
+      for (const mesh of meshes) {
+        scene.remove(mesh)
+        mesh.geometry.dispose()
+        mesh.dispose()
+      }
       wood.dispose()
     },
   }
@@ -278,8 +283,10 @@ function buildFences(scene: THREE.Scene) {
 
 function buildSigns(scene: THREE.Scene) {
   const signs = new Map<PenID, Sign>()
+  const groups = new Map<PenID, THREE.Group>()
   const wood = new THREE.MeshStandardMaterial({ color: "#8a6238", roughness: 1 })
-  for (const pen of PENS) {
+  const recent = RELEASE_PENS.find((pen) => pen.id === "recent")!
+  for (const pen of [...PENS, recent]) {
     const canvas = document.createElement("canvas")
     canvas.width = 512
     canvas.height = 176
@@ -300,8 +307,39 @@ function buildSigns(scene: THREE.Scene) {
     group.position.set(pen.rect.x0 + 3.9, 0, pen.rect.z1 + 1.35)
     scene.add(group)
     signs.set(pen.id, sign)
+    groups.set(pen.id, group)
   }
-  return signs
+  return { signs, groups }
+}
+
+/** The optional centre fence that turns the rear field into two equal release paddocks. */
+function buildReleaseDivider(scene: THREE.Scene) {
+  const group = new THREE.Group()
+  const wood = new THREE.MeshStandardMaterial({ color: "#9c6f3a", roughness: 0.95 })
+  const rear = PENS.find((pen) => pen.id === "merged")!.rect
+  const x = (rear.x0 + rear.x1) / 2
+  const spacing = 3
+  const length = rear.z1 - rear.z0
+  const segments = Math.max(1, Math.round(length / spacing))
+  const step = length / segments
+  for (let i = 0; i <= segments; i++) {
+    const z = rear.z0 + step * i
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.2, 1.15, 0.2), wood)
+    post.position.set(x, 0.57, z)
+    post.castShadow = true
+    group.add(post)
+    if (i === segments) continue
+    for (const y of [0.45, 0.85]) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(step, 0.09, 0.07), wood)
+      rail.position.set(x, y, z + step / 2)
+      rail.rotation.y = Math.PI / 2
+      rail.castShadow = true
+      group.add(rail)
+    }
+  }
+  group.visible = false
+  scene.add(group)
+  return group
 }
 
 function buildClouds(scene: THREE.Scene) {
@@ -490,7 +528,9 @@ export function buildScenery(scene: THREE.Scene): Scenery {
   let fences = buildFences(scene)
   const barn = buildBarn(outBack)
   buildBackdrop(scene)
-  const signs = buildSigns(scene)
+  const { signs, groups: signGroups } = buildSigns(scene)
+  const releaseDivider = buildReleaseDivider(scene)
+  signGroups.get("recent")!.visible = false
   // John Pork: every few minutes he rises into the loft window, looks around, and drops back.
   const porkRand = mulberry32(777)
   let porkNext = 90 + porkRand() * 120
@@ -526,6 +566,11 @@ export function buildScenery(scene: THREE.Scene): Scenery {
       outBack.position.z = z0 - MERGED_BASE.z0
     },
     backOffset: () => outBack.position.z,
+    setPenVisible(pen, visible) {
+      const sign = signGroups.get(pen)
+      if (pen === "recent") releaseDivider.visible = visible
+      if (sign) sign.visible = visible
+    },
     porkPosition() {
       return barn.pork.getWorldPosition(porkWorld).clone().add(new THREE.Vector3(0, 0.7, 0))
     },
