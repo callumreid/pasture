@@ -4,6 +4,7 @@ import { PENS, type PenID } from "../pens"
 import { groundTexture, paintSign, type Sign } from "./atlas"
 import { createSkyRig, type SkyRig } from "./weather"
 import { buildBackdrop } from "./backdrop"
+import { DOOR_H, DOOR_W, buildParty, type Party } from "./party"
 import { JOHN_PORK } from "../critters"
 
 const TAU = Math.PI * 2
@@ -21,6 +22,8 @@ export type Scenery = {
   clouds: THREE.Group[]
   /** World position of John Pork's head, for labels. */
   porkPosition(): THREE.Vector3
+  /** The barn doors and the disco ball. */
+  party: Party
   /** The sky, driven by the real sun and weather. */
   sky: SkyRig
   /** Advance the wind. */
@@ -346,11 +349,31 @@ function buildBarn(scene: THREE.Scene) {
   const width = 15
   const depth = 10
   const wall = 6
-  const walls = new THREE.Mesh(new THREE.BoxGeometry(width, wall, depth), red)
-  walls.position.y = wall / 2
-  walls.castShadow = true
-  walls.receiveShadow = true
-  barn.add(walls)
+  // Walls as slabs, so the barn has an inside: the face toward the room is wood.
+  const wood = new THREE.MeshStandardMaterial({ color: "#5a3a28", roughness: 1 })
+  const t = 0.4
+  const slab = (w: number, h: number, d: number, x: number, y: number, z: number, inner: number) => {
+    // BoxGeometry material order: +x, -x, +y, -y, +z, -z. `inner` is the face toward the room.
+    const materials = [red, red, red, red, red, red]
+    materials[inner] = wood
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), materials)
+    mesh.position.set(x, y, z)
+    mesh.castShadow = true
+    mesh.receiveShadow = true
+    barn.add(mesh)
+  }
+  slab(t, wall, depth, -width / 2 + t / 2, wall / 2, 0, 0)
+  slab(t, wall, depth, width / 2 - t / 2, wall / 2, 0, 1)
+  slab(width, wall, t, 0, wall / 2, -depth / 2 + t / 2, 4)
+  const jamb = (width - DOOR_W) / 2
+  slab(jamb, wall, t, -(DOOR_W / 2 + jamb / 2), wall / 2, depth / 2 - t / 2, 5)
+  slab(jamb, wall, t, DOOR_W / 2 + jamb / 2, wall / 2, depth / 2 - t / 2, 5)
+  slab(DOOR_W, wall - DOOR_H, t, 0, DOOR_H + (wall - DOOR_H) / 2, depth / 2 - t / 2, 5)
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(width - t, depth - t), wood)
+  floor.rotation.x = -Math.PI / 2
+  floor.position.y = 0.04
+  floor.receiveShadow = true
+  barn.add(floor)
   const gable = new THREE.Shape()
   gable.moveTo(-width / 2, wall)
   gable.lineTo(width / 2, wall)
@@ -369,15 +392,7 @@ function buildBarn(scene: THREE.Scene) {
     slab.castShadow = true
     barn.add(slab)
   }
-  const door = new THREE.Mesh(new THREE.BoxGeometry(4.6, 4.4, 0.2), dark)
-  door.position.set(0, 2.2, depth / 2 + 0.05)
-  barn.add(door)
-  for (const angle of [Math.PI / 4, -Math.PI / 4]) {
-    const brace = new THREE.Mesh(new THREE.BoxGeometry(5.6, 0.32, 0.12), trim)
-    brace.position.set(0, 2.2, depth / 2 + 0.2)
-    brace.rotation.z = angle
-    barn.add(brace)
-  }
+  const party = buildParty({ barn, width, depth, wall, dark, trim })
   const frame = new THREE.Mesh(new THREE.BoxGeometry(5, 0.3, 0.14), trim)
   frame.position.set(0, 4.5, depth / 2 + 0.2)
   barn.add(frame)
@@ -425,7 +440,7 @@ function buildBarn(scene: THREE.Scene) {
   barn.position.set(20, 0, -48)
   barn.rotation.y = -0.12
   scene.add(barn)
-  return { pork, windowY: wall + 1.6, hiddenY: wall + 1.6 - 1.7 }
+  return { pork, party, windowY: wall + 1.6, hiddenY: wall + 1.6 - 1.7 }
 
   const straw = new THREE.MeshStandardMaterial({ color: "#d9b45e", roughness: 1 })
   const bale = new THREE.CylinderGeometry(1, 1, 1.7, 18)
@@ -489,10 +504,12 @@ export function buildScenery(scene: THREE.Scene): Scenery {
     porkPosition() {
       return barn.pork.getWorldPosition(porkWorld).clone().add(new THREE.Vector3(0, 0.7, 0))
     },
+    party: barn.party,
     tick(t, dt) {
       uniforms.uTime.value = t
       sky.tick(t, dt)
       porkTick(t)
+      barn.party.tick(t, dt)
     },
   }
 }

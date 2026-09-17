@@ -70,6 +70,8 @@ export type PastureScene = {
   setTour(on: boolean): void
   /** Put the camera exactly here, looking exactly there (for films and screenshots). */
   setCamera(position: [number, number, number], target: [number, number, number]): void
+  /** An event is on: the barn doors open and the disco ball comes out (or goes away). */
+  setParty(on: boolean): void
   /** Seconds of tour between upsidedown times (0 = never). */
   setUpsidedownEvery(seconds: number): void
   /** Upsidedown time, right now. */
@@ -917,6 +919,9 @@ export function createPastureScene(canvas: HTMLCanvasElement, events: PastureEve
     },
     setTour(on) {
       tour.setEnabled(on)
+    },
+    setParty(on) {
+      scenery.party.set(on)
     },
     setUpsidedownEvery(seconds) {
       upsidedown.setEvery(seconds)

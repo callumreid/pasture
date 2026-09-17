@@ -9,6 +9,7 @@ import { createPastureScene, type CowSpec, type PastureScene, type PickTarget, t
 import { PASTURE_TIMEFRAMES, cowID, type Herd, type OpenMode, type Viewer } from "@/lib/pasture/types"
 import { isWolf, wolfID, type AlertSummary } from "@/lib/pasture/wolves"
 import { SAN_FRANCISCO, describeWeather, localClock, sunPosition, type Weather } from "@/lib/sky"
+import type { PartyEvent } from "@/lib/events"
 import { HoverCard } from "./HoverCard"
 import { Inspector } from "./Inspector"
 import { WhosWho, type WhosWhoPerson } from "./WhosWho"
@@ -71,6 +72,12 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
   const [alerts, setAlerts] = useState<{ home: string | null; count: number; alerts: AlertSummary[] }>({ home: null, count: 0, alerts: [] })
   const [weather, setWeather] = useState<Weather | null>(null)
   const [upsidedown, setUpsidedown] = useState<UpsidedownStage>()
+  const [party, setParty] = useState<PartyEvent | null>(null)
+  // `?party=1` throws the doors open regardless, for demos.
+  const [partyForced, setPartyForced] = useState(false)
+  useEffect(() => {
+    setPartyForced(new URLSearchParams(window.location.search).get("party") === "1")
+  }, [])
   // `?sky=off` freezes the field at a nice afternoon, for screenshots and films. Read after mount so the server and client agree.
   const [liveSky, setLiveSky] = useState(true)
   useEffect(() => {
@@ -180,6 +187,25 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
   const alertsRef = useRef(alertsById)
   alertsRef.current = alertsById
   useEffect(() => sceneRef.current?.setWolves(alerts.alerts), [alerts])
+
+  // The team's events open the barn: the route reads the calendar feeds and answers quietly for any field but the home organization.
+  const loadEvents = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/events?scope=${encodeURIComponent(settings.scope)}`, { cache: "no-store" })
+      if (!response.ok) return
+      const body = (await response.json()) as { party: PartyEvent | null }
+      setParty(body.party ?? null)
+    } catch {
+      // A missed poll leaves the doors as they were.
+    }
+  }, [settings.scope])
+  useEffect(() => {
+    if (!ready) return
+    void loadEvents()
+    const timer = setInterval(() => void loadEvents(), 5 * 60_000)
+    return () => clearInterval(timer)
+  }, [ready, loadEvents])
+  useEffect(() => sceneRef.current?.setParty(!!party || partyForced), [party, partyForced])
 
   // The sky over the field is San Francisco's: the sun where it really is, the weather as it is.
   useEffect(() => {
@@ -518,17 +544,31 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
             </div>
           </div>
         ) : null}
-        {alerts.count > 0 ? (
-          <a
-            className="pill wolves"
-            href={`https://app.${process.env.NEXT_PUBLIC_DD_SITE || "us5.datadoghq.com"}/monitors/manage?q=status%3Aalert`}
-            target="_blank"
-            rel="noopener noreferrer"
-            title="Wolves on the field: Datadog monitors in alert. Click to see them all."
-          >
-            🐺 {plural(alerts.count, "alert")} firing
-          </a>
-        ) : null}
+        <div className="corner">
+          {alerts.count > 0 ? (
+            <a
+              className="pill wolves"
+              href={`https://app.${process.env.NEXT_PUBLIC_DD_SITE || "us5.datadoghq.com"}/monitors/manage?q=status%3Aalert`}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Wolves on the field: Datadog monitors in alert. Click to see them all."
+            >
+              🐺 {plural(alerts.count, "alert")} firing
+            </a>
+          ) : null}
+          {party || partyForced ? (
+            <a
+              className="pill party"
+              href={party?.url ?? undefined}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="There is an event on: the barn doors are open and the disco ball is up."
+            >
+              🪩 {party?.name ?? "Party mode"}
+              {party ? ` · until ${localClock(new Date(party.end))}` : ""}
+            </a>
+          ) : null}
+        </div>
         {bubble ? (
           <div className="bubble" style={{ left: `${bubble.x}px`, top: `${bubble.y}px` }} role="status">
             {bubble.text}

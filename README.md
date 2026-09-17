@@ -42,6 +42,13 @@ impatient).
 A cow in the merge queue hovers and turns slowly until its turn comes. John Pork lives in the
 barn loft and shows his face at the window now and again.
 
+When the team has an event on, the barn doors swing open and inside there is a disco ball: beams
+sweeping, lights twinkling across the floor and out over the grass, bulbs blinking along the eave.
+The doors open fifteen minutes before the event and close when it ends. Events come from public
+calendar feeds (`PASTURE_EVENTS_ICS`: a Luma calendar's feed, a public Google Calendar) or a
+hand-written list (`PASTURE_EVENTS`), on the home organization's field. `?party=1` throws the
+doors open for a look.
+
 When a Datadog monitor goes into alert, a wolf comes out of the trees and prowls the fence line
 until it clears. One wolf per firing alert (up to eight); hover one for the monitor's name, click
 it to open the monitor. When an alert clears, Moon or Bean chases the wolf off. Wolves only show on the home organization's field, to its members.

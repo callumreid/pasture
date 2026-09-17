@@ -300,11 +300,18 @@ img {
   border-color: rgba(192, 57, 43, 0.3);
 }
 
-.pill.wolves {
+.corner {
   position: absolute;
   left: 14px;
   top: 14px;
   z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.pill.wolves {
   text-decoration: none;
   font-weight: 700;
   color: var(--ink);
@@ -312,6 +319,18 @@ img {
 }
 
 .pill.wolves:hover {
+  background: #fff;
+}
+
+.pill.party {
+  text-decoration: none;
+  font-weight: 800;
+  color: var(--ink);
+  border-color: rgba(255, 79, 216, 0.55);
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.95), rgba(255, 233, 250, 0.95));
+}
+
+.pill.party:hover {
   background: #fff;
 }
 
