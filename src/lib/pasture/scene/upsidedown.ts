@@ -9,8 +9,8 @@ import * as THREE from "three"
  */
 export type UpsidedownStage = "title" | "flip" | "fade" | "restore"
 
-/** Seconds of tour between events. */
-export const UPSIDEDOWN_EVERY = 15 * 60
+/** Seconds of tour between events: once an hour, so a TV does not roll over every time someone looks up. */
+export const UPSIDEDOWN_EVERY = 60 * 60
 /** How long the world stays wrong. */
 export const UPSIDEDOWN_SECONDS = 10
 

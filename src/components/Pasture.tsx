@@ -405,7 +405,7 @@ export default function Pasture(props: { defaultScope: string; tokenMode: boolea
     const params = new URLSearchParams(window.location.search)
     const ufo = Number(params.get("ufo"))
     if (Number.isFinite(ufo) && ufo > 0) scene.setUfoOdds(ufo)
-    // `?flipEvery=N` is seconds of tour between upsidedown times (default fifteen minutes); `?flip=1` does one on load.
+    // `?flipEvery=N` is seconds of tour between upsidedown times (default an hour); `?flip=1` does one on load.
     const flipEvery = Number(params.get("flipEvery"))
     if (Number.isFinite(flipEvery) && flipEvery > 0) scene.setUpsidedownEvery(flipEvery)
     if (params.get("flip") === "1") window.setTimeout(() => scene.upsidedownNow(), 4000)

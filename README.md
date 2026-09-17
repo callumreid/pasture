@@ -34,10 +34,9 @@ freezes a nice afternoon for screenshots.
 Leave it on a TV with the **Tour** button on (or `?tour=1`) and the camera drifts around the farm
 on its own: a slow push in on each pen, a low pass along the fences, a look at the barn, back out
 wide. Touch it and it holds still for a minute. Off past the barn is the bay, the city, and the
-Golden Gate Bridge; this is a farm, after all, so they are a long way off. Every fifteen minutes of
-tour it is UPSIDEDOWN TIME: the world rolls over, every cow falls off the earth into the sky, it
-fades to black, and then the tour carries on as if nothing happened (`?flipEvery=60` for the
-impatient).
+Golden Gate Bridge; this is a farm, after all, so they are a long way off. Once an hour of tour it
+is UPSIDEDOWN TIME: the world rolls over, every cow falls off the earth into the sky, it fades to
+black, and then the tour carries on as if nothing happened (`?flipEvery=60` for the impatient).
 
 A cow in the merge queue hovers and turns slowly until its turn comes. John Pork lives in the
 barn loft and shows his face at the window now and again.
