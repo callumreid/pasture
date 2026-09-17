@@ -16,8 +16,8 @@ import { WhosWho, type WhosWhoPerson } from "./WhosWho"
 import { ScopePicker } from "./ScopePicker"
 import { plural, relative, timeframeLabel } from "./format"
 
-/** Past this many the field turns into a stampede and the frame rate goes with it. */
-const HERD_CAP = 300
+/** Every open cow plus the newest merges up to this; the server keeps ten thousand merges at most, and the merged herd is instanced so thousands are fine. */
+const HERD_CAP = 12_000
 /** While the field is open, GitHub is re-read this often so stage changes get their hand-of-god moment. */
 const REFRESH_MS = 60_000
 const STORAGE_KEY = "pasture.settings"

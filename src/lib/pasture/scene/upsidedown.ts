@@ -21,7 +21,7 @@ const RESTORE_AT = UPSIDEDOWN_SECONDS
 const DONE_AT = UPSIDEDOWN_SECONDS + 0.6
 const GRAVITY = 9
 
-export type Faller = { parts: { group: THREE.Group }; rand: () => number }
+export type Faller = { parts: { group: THREE.Object3D }; rand: () => number }
 type Fall = { start: number; spinX: number; spinZ: number }
 
 export type Upsidedown = {

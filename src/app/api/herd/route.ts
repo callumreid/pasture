@@ -41,7 +41,8 @@ function load(key: string, token: string, scope: Scope, days: number, openMode: 
   const promise = fetchHerd(token, { scope, days, openMode })
     .then((value) => {
       cache.set(key, { at: Date.now(), value })
-      if (cache.size > 200) cache.delete(cache.keys().next().value!)
+      // A quarter of a busy organization is a few megabytes; keep the cache small.
+      if (cache.size > 40) cache.delete(cache.keys().next().value!)
       return value
     })
     .finally(() => inflight.delete(key))

@@ -56,11 +56,13 @@ export type MergedPullRequest = {
   createdAt: string
   mergedAt: string
   author: string
+  /** Always null in a herd answer (see `Herd.people`); kept for the shape of a pull request. */
   authorAvatar: string | null
   mergedBy: string | null
-  additions: number
-  deletions: number
-  changedFiles: number
+  /** Not in a herd answer: a lifted cow fetches its diff from /api/pr. */
+  additions?: number
+  deletions?: number
+  changedFiles?: number
   base: string
   labels: string[]
 }
@@ -87,6 +89,8 @@ export type Herd = {
   /** More matched than were fetched; the field shows the newest. */
   truncatedOpen?: boolean
   truncatedMerged?: boolean
+  /** How many pull requests GitHub says merged in the window, fetched or not. */
+  mergedTotal?: number
   rateLimitRemaining?: number
 }
 

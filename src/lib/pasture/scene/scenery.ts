@@ -1,6 +1,6 @@
 import * as THREE from "three"
 import { mulberry32 } from "@/lib/rng"
-import { PENS, type PenID } from "../pens"
+import { MERGED_BASE, PENS, type PenID } from "../pens"
 import { groundTexture, paintSign, type Sign } from "./atlas"
 import { createSkyRig, type SkyRig } from "./weather"
 import { buildBackdrop } from "./backdrop"
@@ -20,6 +20,10 @@ export function inPond(x: number, z: number, margin = 1.5) {
 export type Scenery = {
   signs: Map<PenID, Sign>
   clouds: THREE.Group[]
+  /** The merged pen's back fence is at `z0` now: rebuild the fences and move the barn and the trees behind it. */
+  setBackFence(z0: number): void
+  /** How far back the barn has moved from where it was built. */
+  backOffset(): number
   /** World position of John Pork's head, for labels. */
   porkPosition(): THREE.Vector3
   /** The barn doors and the disco ball. */
@@ -170,7 +174,7 @@ function buildPond(scene: THREE.Scene) {
   }
 }
 
-function buildTrees(scene: THREE.Scene) {
+function buildTrees(scene: THREE.Scene, outBack: THREE.Group) {
   const trunk = new THREE.MeshStandardMaterial({ color: "#6f4a2c", roughness: 1 })
   const leaves = ["#3e8f3a", "#4ca046", "#2f7a2e", "#5aae4f"].map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.9 }))
   const rand = mulberry32(31)
@@ -198,7 +202,9 @@ function buildTrees(scene: THREE.Scene) {
     }
     tree.position.set(x, 0, z)
     tree.rotation.y = rand() * TAU
-    scene.add(tree)
+    // The trees behind the pens go with the back fence when the herd grows.
+    if (z < MERGED_BASE.z0) outBack.add(tree)
+    else scene.add(tree)
   }
 }
 
@@ -258,6 +264,16 @@ function buildFences(scene: THREE.Scene) {
   postMesh.castShadow = true
   railMesh.castShadow = true
   scene.add(postMesh, railMesh)
+  return {
+    dispose() {
+      scene.remove(postMesh, railMesh)
+      postMesh.geometry.dispose()
+      railMesh.geometry.dispose()
+      postMesh.dispose()
+      railMesh.dispose()
+      wood.dispose()
+    },
+  }
 }
 
 function buildSigns(scene: THREE.Scene) {
@@ -340,7 +356,7 @@ function buildSky(scene: THREE.Scene) {
 }
 
 /** A red barn out back, with a hayloft window and a few bales beside it. */
-function buildBarn(scene: THREE.Scene) {
+function buildBarn(scene: THREE.Object3D) {
   const red = new THREE.MeshStandardMaterial({ color: "#a83a2e", roughness: 0.9 })
   const trim = new THREE.MeshStandardMaterial({ color: "#f2ede4", roughness: 0.9 })
   const roofing = new THREE.MeshStandardMaterial({ color: "#4a3630", roughness: 0.95 })
@@ -466,10 +482,13 @@ export function buildScenery(scene: THREE.Scene): Scenery {
   buildGrass(scene, uniforms)
   buildFlowers(scene)
   buildPond(scene)
-  buildTrees(scene)
+  // Everything behind the merged pen moves back with its fence when the herd grows.
+  const outBack = new THREE.Group()
+  scene.add(outBack)
+  buildTrees(scene, outBack)
   buildRocks(scene)
-  buildFences(scene)
-  const barn = buildBarn(scene)
+  let fences = buildFences(scene)
+  const barn = buildBarn(outBack)
   buildBackdrop(scene)
   const signs = buildSigns(scene)
   // John Pork: every few minutes he rises into the loft window, looks around, and drops back.
@@ -501,6 +520,12 @@ export function buildScenery(scene: THREE.Scene): Scenery {
     signs,
     clouds,
     sky,
+    setBackFence(z0) {
+      fences.dispose()
+      fences = buildFences(scene)
+      outBack.position.z = z0 - MERGED_BASE.z0
+    },
+    backOffset: () => outBack.position.z,
     porkPosition() {
       return barn.pork.getWorldPosition(porkWorld).clone().add(new THREE.Vector3(0, 0.7, 0))
     },

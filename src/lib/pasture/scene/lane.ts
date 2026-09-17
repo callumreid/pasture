@@ -8,7 +8,7 @@ import { PENS } from "../pens"
  */
 const MARGIN = 5
 
-export const LANE = (() => {
+function bounds() {
   const x0 = Math.min(...PENS.map((pen) => pen.rect.x0)) - MARGIN
   const x1 = Math.max(...PENS.map((pen) => pen.rect.x1)) + MARGIN
   const z0 = Math.min(...PENS.map((pen) => pen.rect.z0)) - MARGIN
@@ -16,7 +16,14 @@ export const LANE = (() => {
   const width = x1 - x0
   const depth = z1 - z0
   return { x0, x1, z0, z1, width, depth, length: 2 * (width + depth) }
-})()
+}
+
+export const LANE = bounds()
+
+/** The merged pen's back fence moved: the lane's back leg goes with it. Runners keep their `s` and wrap. */
+export function updateLane() {
+  Object.assign(LANE, bounds())
+}
 
 export type LanePoint = { x: number; z: number; heading: number; side: "front" | "right" | "back" | "left" }
 

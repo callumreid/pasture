@@ -1,13 +1,24 @@
 import "server-only"
 import { derivePrState, type PrCheckState, type PrReviewState } from "@/lib/pr-state"
 import type { ClosedPullRequest, Herd, HerdRequest, MergedPullRequest, OpenPullRequest, Person, Scope, Viewer } from "@/lib/pasture/types"
+import { readWindow, type WindowIO } from "@/lib/search-plan"
 
 const ENDPOINT = "https://api.github.com/graphql"
+/** A page of open pull requests carries reviews, threads and checks, so it is kept small. */
 const OPEN_PAGE = 50
-const MAX_OPEN_PAGES = 4
 const MERGED_PAGE = 100
-/** The newest merges kept after every slice has answered; the field caps lower than this anyway. */
-const MAX_MERGED = 400
+const CLOSED_PAGE = 100
+/** The newest merges kept; a quarter of a busy organization is several thousand. */
+export const MAX_MERGED = 10_000
+/** Open pull requests kept, in either mode. */
+const MAX_OPEN = 3000
+const MAX_CLOSED = 2000
+/** Concurrent searches per herd read. Three searches run at once, so GitHub sees up to three times this. */
+const PARALLEL = 12
+/** Slices are never split narrower than this. */
+const MIN_SLICE_MS = 15 * 60_000
+/** GitHub has no pull requests before this; the floor for "every open PR, however old". */
+const DAWN = Date.UTC(2008, 0, 1)
 
 export class GitHubError extends Error {
   status: number
@@ -115,7 +126,7 @@ query($q: String!, $cursor: String) {
     issueCount
     pageInfo { hasNextPage endCursor }
     nodes { ... on PullRequest {
-      number title url mergedAt createdAt additions deletions changedFiles baseRefName
+      number title url mergedAt createdAt baseRefName
       author { login avatarUrl }
       mergedBy { login }
       repository { nameWithOwner isArchived }
@@ -123,6 +134,28 @@ query($q: String!, $cursor: String) {
     } }
   }
 }`
+
+/**
+ * The diff of one pull request. Asking for additions and deletions makes a
+ * page of a hundred merged pull requests three times slower, so the herd is
+ * read without them and a lifted cow's are fetched on their own.
+ */
+const STATS_QUERY = `
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { additions deletions changedFiles }
+  }
+}`
+
+export type PullRequestStats = { additions: number; deletions: number; changedFiles: number }
+
+export async function fetchPullRequestStats(token: string, repo: string, number: number): Promise<PullRequestStats | undefined> {
+  const [owner, name] = repo.split("/")
+  if (!owner || !name) return undefined
+  const data = await graphql<{ repository: { pullRequest: PullRequestStats | null } | null }>(token, STATS_QUERY, { owner, name, number })
+  const pr = data.repository?.pullRequest
+  return pr ? { additions: pr.additions ?? 0, deletions: pr.deletions ?? 0, changedFiles: pr.changedFiles ?? 0 } : undefined
+}
 
 const CLOSED_QUERY = `
 query($q: String!, $cursor: String) {
@@ -135,6 +168,13 @@ query($q: String!, $cursor: String) {
       repository { nameWithOwner isArchived }
     } }
   }
+}`
+
+/** How many match, and nothing else: the planner's probe. */
+const COUNT_QUERY = `
+query($q: String!) {
+  rateLimit { remaining }
+  search(query: $q, type: ISSUE, first: 1) { issueCount }
 }`
 
 type RawClosed = { number: number; closedAt: string; repository: { nameWithOwner: string; isArchived?: boolean | null } }
@@ -177,9 +217,6 @@ type RawMerged = {
   url: string
   mergedAt: string
   createdAt: string
-  additions?: number | null
-  deletions?: number | null
-  changedFiles?: number | null
   baseRefName?: string | null
   author?: RawActor
   mergedBy?: { login?: string | null } | null
@@ -285,9 +322,6 @@ function toMerged(node: RawMerged): MergedPullRequest {
     author: node.author?.login ?? "ghost",
     authorAvatar: node.author?.avatarUrl ?? null,
     mergedBy: node.mergedBy?.login ?? null,
-    additions: node.additions ?? 0,
-    deletions: node.deletions ?? 0,
-    changedFiles: node.changedFiles ?? 0,
     base: node.baseRefName ?? "main",
     labels: (node.labels?.nodes ?? []).map((label) => label.name),
   }
@@ -298,93 +332,75 @@ export function scopeQualifier(scope: Scope) {
   return scope.kind === "org" ? `org:${scope.login}` : `author:${scope.login}`
 }
 
-async function searchAll<T>(
-  token: string,
-  query: string,
-  q: string,
-  pages: number,
-  keep: (node: unknown) => node is T,
-): Promise<{ items: T[]; truncated: boolean; remaining?: number }> {
-  const items: T[] = []
-  let cursor: string | null = null
-  let truncated = false
-  let remaining: number | undefined
-  for (let page = 0; page < pages; page++) {
-    const data: SearchPage<T> = await graphql<SearchPage<T>>(token, query, { q, cursor })
-    remaining = data.rateLimit?.remaining ?? remaining
-    for (const node of data.search.nodes) {
-      // GitHub search ignores archived:false for pull requests; drop them here.
-      if (!keep(node) || (node as { repository?: { isArchived?: boolean | null } }).repository?.isArchived) continue
-      items.push(node)
-    }
-    const info = data.search.pageInfo
-    if (!info.hasNextPage || !info.endCursor) break
-    cursor = info.endCursor
-    if (page === pages - 1) truncated = true
-  }
-  return { items, truncated, remaining }
-}
-
 const stamp = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z")
 
+type Keyed = { number: number; repository: { nameWithOwner: string; isArchived?: boolean | null } }
+
 /**
- * GitHub pages a search sequentially and a big page of pull requests with
- * reviews and checks takes seconds, so the window is cut into slices that
- * are searched in parallel. Slices meet at a shared second and search ranges
- * are inclusive, so the same PR can come back twice; callers dedupe.
+ * GitHub answers at most 1000 results per search and pages them one at a
+ * time, so a window is read as date slices small enough to page in full,
+ * in parallel (see search-plan). Slices never overlap, but the index can
+ * shift between pages, so callers still dedupe.
  */
-async function slicedSearch<T extends { number: number; repository: { nameWithOwner: string } }>(
+function windowIO<T extends Keyed>(token: string, query: string, base: string, field: "merged" | "updated" | "created" | "closed", keep: (node: unknown) => node is T): WindowIO<T> {
+  const q = (from: number, to: number) => `${base} ${field}:${stamp(from)}..${stamp(to)}`
+  return {
+    async count(from, to) {
+      const data = await graphql<{ search: { issueCount: number } }>(token, COUNT_QUERY, { q: q(from, to) })
+      return data.search.issueCount
+    },
+    async page(from, to, cursor) {
+      const data = await graphql<SearchPage<T>>(token, query, { q: q(from, to), cursor })
+      // GitHub search ignores archived:false for pull requests; drop them here.
+      const items = data.search.nodes.filter((node): node is T => keep(node) && !node.repository?.isArchived)
+      return { items, hasNextPage: data.search.pageInfo.hasNextPage, endCursor: data.search.pageInfo.endCursor, remaining: data.rateLimit?.remaining }
+    },
+  }
+}
+
+async function searchWindow<T extends Keyed>(
   token: string,
   query: string,
   base: string,
-  field: "merged" | "updated",
-  since: number,
-  now: number,
-  slices: number,
-  pagesPerSlice: number,
+  field: "merged" | "updated" | "created" | "closed",
+  from: number,
+  to: number,
   keep: (node: unknown) => node is T,
+  opts: { pageSize: number; pages: number; budget: number },
 ) {
-  const step = (now - since) / slices
-  const results = await Promise.all(
-    Array.from({ length: slices }, (_, i) => {
-      const from = stamp(since + step * i)
-      const to = stamp(i === slices - 1 ? now + 60_000 : since + step * (i + 1))
-      return searchAll<T>(token, query, `${base} ${field}:${from}..${to}`, pagesPerSlice, keep)
-    }),
-  )
+  const result = await readWindow(windowIO(token, query, base, field, keep), from, to, {
+    target: opts.pageSize * opts.pages,
+    minWidth: MIN_SLICE_MS,
+    parallel: PARALLEL,
+    budget: opts.budget,
+    pageSize: opts.pageSize,
+  })
   const seen = new Set<string>()
   const items: T[] = []
-  for (const result of results) {
-    for (const item of result.items) {
-      const id = `${item.repository.nameWithOwner}#${item.number}`
-      if (seen.has(id)) continue
-      seen.add(id)
-      items.push(item)
-    }
+  for (const item of result.items) {
+    const id = `${item.repository.nameWithOwner}#${item.number}`
+    if (seen.has(id)) continue
+    seen.add(id)
+    items.push(item)
   }
-  return {
-    items,
-    truncated: results.some((result) => result.truncated),
-    remaining: results.reduce<number | undefined>((min, result) => (result.remaining === undefined ? min : Math.min(min ?? Infinity, result.remaining)), undefined),
-  }
+  return { items, total: result.total, truncated: result.truncated, remaining: result.remaining }
 }
-
-/** Shorter windows get finer slices; the cost is one search per slice per refresh. */
-const sliceCount = (days: number) => Math.min(8, Math.max(3, Math.ceil(days * 4)))
 
 /** One cow per pull request: open ones in the window (or all of them) and everything merged in the window. */
 export async function fetchHerd(token: string, input: HerdRequest, now = Date.now()): Promise<Herd> {
   const days = Math.max(1, Math.min(366, Math.floor(input.days) || 1))
   const since = now - days * 86_400_000
   const where = scopeQualifier(input.scope)
-  const slices = sliceCount(days)
+  // Search ranges are inclusive and second-precise; a minute of slack covers clock skew with GitHub.
+  const until = now + 60_000
+  const openBase = `is:pr is:open ${where} sort:updated-desc`
   const [open, merged, closed] = await Promise.all([
     input.openMode === "active"
-      ? slicedSearch<RawOpen>(token, OPEN_QUERY, `is:pr is:open ${where} sort:updated-desc`, "updated", since, now, slices, 2, isRawOpen)
-      : searchAll<RawOpen>(token, OPEN_QUERY, `is:pr is:open ${where} sort:updated-desc`, MAX_OPEN_PAGES, isRawOpen),
-    slicedSearch<RawMerged>(token, MERGED_QUERY, `is:pr is:merged ${where} sort:updated-desc`, "merged", since, now, slices, 2, isRawMerged),
-    // Closed without merging: these cows burn. Rare enough for a single page.
-    searchAll<RawClosed>(token, CLOSED_QUERY, `is:pr is:closed is:unmerged ${where} closed:>=${stamp(since)} sort:updated-desc`, 1, isRawClosed),
+      ? searchWindow<RawOpen>(token, OPEN_QUERY, openBase, "updated", since, until, isRawOpen, { pageSize: OPEN_PAGE, pages: 2, budget: MAX_OPEN })
+      : searchWindow<RawOpen>(token, OPEN_QUERY, openBase, "created", DAWN, until, isRawOpen, { pageSize: OPEN_PAGE, pages: 2, budget: MAX_OPEN }),
+    searchWindow<RawMerged>(token, MERGED_QUERY, `is:pr is:merged ${where} sort:updated-desc`, "merged", since, until, isRawMerged, { pageSize: MERGED_PAGE, pages: 3, budget: MAX_MERGED }),
+    // Closed without merging: these cows burn.
+    searchWindow<RawClosed>(token, CLOSED_QUERY, `is:pr is:closed is:unmerged ${where} sort:updated-desc`, "closed", since, until, isRawClosed, { pageSize: CLOSED_PAGE, pages: 3, budget: MAX_CLOSED }),
   ])
   const closedItems: ClosedPullRequest[] = closed.items.map((node) => ({ repo: node.repository.nameWithOwner, number: node.number, closedAt: node.closedAt }))
   const openItems = open.items.map(toOpen).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
@@ -394,6 +410,9 @@ export async function fetchHerd(token: string, input: HerdRequest, now = Date.no
   for (const pr of [...openItems, ...mergedItems]) {
     if (!people.has(pr.author)) people.set(pr.author, { login: pr.author, avatarUrl: pr.authorAvatar })
   }
+  // Thousands of merged cows: their avatars are in `people`, so the answer carries each once.
+  for (const pr of mergedItems) pr.authorAvatar = null
+  const least = (...values: (number | undefined)[]) => values.reduce<number | undefined>((min, v) => (v === undefined ? min : Math.min(min ?? Infinity, v)), undefined)
   return {
     scope: input.scope,
     days,
@@ -405,6 +424,7 @@ export async function fetchHerd(token: string, input: HerdRequest, now = Date.no
     people: [...people.values()],
     truncatedOpen: open.truncated || undefined,
     truncatedMerged: merged.truncated || mergedAll.length > MAX_MERGED || undefined,
-    rateLimitRemaining: merged.remaining ?? open.remaining,
+    mergedTotal: merged.total,
+    rateLimitRemaining: least(merged.remaining, open.remaining, closed.remaining),
   }
 }

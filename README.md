@@ -55,6 +55,15 @@ it to open the monitor. When an alert clears, Moon or Bean chases the wolf off. 
 
 <img src="docs/media/pasture.jpg" alt="the field: 125 merged cows out back, 55 open ones in the front pens" width="840" />
 
+Set the window to 90 days on a busy team and the whole quarter turns up: the merged pen grows to
+hold it, the back fence walking off toward the barn (which steps back to make room), thousands of
+cows fading into the distance, and once the fence can go no further the cows shrink a little to
+fit. The newest merges stand at the front. GitHub's search stops at a thousand results per query,
+so the field reads the window in date slices, in parallel, and keeps the newest ten thousand
+merges; the back pen is drawn as one instanced herd, so a few thousand cows cost about what a few
+dozen used to. A lifted merged cow fetches its diff on its own, since asking for thousands of diffs
+at once is what made a big window slow.
+
 ## Use it
 
 Go to **[pasture-six.vercel.app](https://pasture-six.vercel.app)** and sign in with GitHub. Pick

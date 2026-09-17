@@ -40,8 +40,10 @@ function penShot(id: PenID, side: number): Shot {
   const c = penCenter(id)
   const { rect } = PENS.find((pen) => pen.id === id)!
   const wide = id === "merged"
-  const distance = wide ? 46 : 26
-  const height = wide ? 26 : 15
+  // A deep merged pen (a big herd) is looked at from higher up, further back.
+  const depth = rect.z1 - rect.z0
+  const distance = wide ? 46 + Math.max(0, depth - 37) * 0.35 : 26
+  const height = wide ? 26 + Math.max(0, depth - 37) * 0.3 : 15
   const a0 = side * 0.55
   const a1 = side * -0.35
   const zf = rect.z1 + (wide ? 8 : 4)
@@ -52,7 +54,7 @@ function penShot(id: PenID, side: number): Shot {
   }
 }
 
-function shots(): Shot[] {
+function shots(back: number): Shot[] {
   return [
     // The whole farm, drifting right to left.
     { hold: 28, from: pose(-30, 44, 88, 0, 1, 0), to: pose(30, 40, 84, 0, 1, -4) },
@@ -62,16 +64,16 @@ function shots(): Shot[] {
     { hold: 30, from: pose(-58, 6, 40, -20, 2, 10), to: pose(58, 7, 40, 20, 2, 10) },
     penShot("changes", 1),
     penShot("ready", -1),
-    // The merged herd and the barn behind it.
+    // The merged herd and the barn behind it (wherever the herd has pushed the barn to).
     penShot("merged", 1),
-    { hold: 24, from: pose(-20, 14, -2, 20, 5, -48), to: pose(30, 18, 8, 20, 5, -48) },
+    { hold: 24, from: pose(-20, 14, -2 + back, 20, 5, -48 + back), to: pose(30, 18, 8 + back, 20, 5, -48 + back) },
     // Back out wide from the other side.
     { hold: 26, from: pose(60, 38, 70, 0, 1, 0), to: pose(-40, 46, 90, 0, 1, 2) },
   ]
 }
 
-export function createTour(camera: THREE.PerspectiveCamera, controls: OrbitControls): Tour {
-  const list = shots()
+export function createTour(camera: THREE.PerspectiveCamera, controls: OrbitControls, back: () => number = () => 0): Tour {
+  let list = shots(back())
   let enabled = false
   let index = -1
   let phase: "transition" | "hold" = "transition"
@@ -81,6 +83,8 @@ export function createTour(camera: THREE.PerspectiveCamera, controls: OrbitContr
   const ease = (u: number) => u * u * (3 - 2 * u)
 
   const begin = (next: number) => {
+    // Shots are framed afresh each time: the merged pen and the barn move with the herd.
+    list = shots(back())
     index = next % list.length
     phase = "transition"
     elapsed = 0

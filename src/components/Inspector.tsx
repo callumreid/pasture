@@ -1,8 +1,33 @@
 "use client"
 
+import { useEffect, useState } from "react"
 import type { PastureMember } from "@/lib/pasture/members"
 import { openDetail } from "@/lib/pasture/members"
 import { absolute, plural, relative, repoShort } from "./format"
+
+type Stats = { additions: number; deletions: number; changedFiles: number }
+
+/** A merged cow's diff is not in the herd (thousands of them would slow every read); ask for it when the cow is lifted. */
+function useStats(member: PastureMember): Stats | undefined {
+  const pr = member.pr
+  const known = typeof pr.additions === "number" && typeof pr.deletions === "number" && typeof pr.changedFiles === "number" ? { additions: pr.additions, deletions: pr.deletions, changedFiles: pr.changedFiles } : undefined
+  const [fetched, setFetched] = useState<{ id: string; stats: Stats | undefined }>()
+  useEffect(() => {
+    if (known) return
+    let cancelled = false
+    const params = new URLSearchParams({ repo: pr.repo, number: String(pr.number) })
+    fetch(`/api/pr?${params}`, { cache: "no-store" })
+      .then(async (response) => (response.ok ? ((await response.json()) as Stats) : undefined))
+      .then((stats) => {
+        if (!cancelled) setFetched({ id: member.id, stats })
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [member.id, pr.repo, pr.number, known])
+  return known ?? (fetched?.id === member.id ? fetched.stats : undefined)
+}
 
 export function Inspector(props: {
   member: PastureMember
@@ -18,6 +43,7 @@ export function Inspector(props: {
   const pr = member.pr
   const merged = member.kind === "merged" ? member.pr : undefined
   const open = member.kind === "open" ? member.pr : undefined
+  const stats = useStats(member)
   return (
     <section className="inspector" aria-label="Selected pull request">
       <div className="head" style={{ "--collar": props.collar ?? "#ccc" } as React.CSSProperties}>
@@ -67,9 +93,9 @@ export function Inspector(props: {
       ) : null}
 
       <div className="row">
-        <span className="add">+{pr.additions}</span>
-        <span className="del">−{pr.deletions}</span>
-        <span>· {plural(pr.changedFiles, "file")}</span>
+        <span className="add">+{stats ? stats.additions : "…"}</span>
+        <span className="del">−{stats ? stats.deletions : "…"}</span>
+        <span>· {stats ? plural(stats.changedFiles, "file") : "files…"}</span>
         {pr.labels.map((label) => (
           <span key={label} className="tag">
             {label}

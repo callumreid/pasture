@@ -1,7 +1,9 @@
 import * as THREE from "three"
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js"
 import { mulberry32 } from "@/lib/rng"
-import { penFor, type PenID } from "../pens"
+import { mergedLayout, penFor, setMergedRect, type MergedLayout, type PenID } from "../pens"
+import { createHerd } from "./herd"
+import { updateLane } from "./lane"
 import { paintSign } from "./atlas"
 import { buildCow, disposeCow, gripHeight, headHeight, type CowParts, type CowSpec } from "./cow"
 import { wolfFor, type AlertSummary } from "../wolves"
@@ -70,6 +72,8 @@ export type PastureScene = {
   setTour(on: boolean): void
   /** Put the camera exactly here, looking exactly there (for films and screenshots). */
   setCamera(position: [number, number, number], target: [number, number, number]): void
+  /** What the last frame cost: draw calls, triangles, and how many cows of each kind are on the field. */
+  stats(): { frame: number; calls: number; triangles: number; rigged: number; herd: number }
   /** An event is on: the barn doors open and the disco ball comes out (or goes away). */
   setParty(on: boolean): void
   /** Seconds of tour between upsidedown times (0 = never). */
@@ -85,7 +89,8 @@ const CARRY_Y = 11
 const MAX_ANIMATED_CHANGES = 8
 /** One transfer in this many is done by the saucer instead of the hand. */
 const UFO_ODDS = 10
-const MAX_SHADOWS = 400
+/** Contact shadows for the rigged cows (the open pens); the merged herd draws its own. */
+const MAX_SHADOWS = 1200
 
 const ease = (u: number) => u * u * (3 - 2 * u)
 
@@ -165,6 +170,8 @@ export function createPastureScene(canvas: HTMLCanvasElement, events: PastureEve
   const ufoOffset = Math.floor(Math.random() * UFO_ODDS)
   const nextVehicle = (): Active["vehicle"] => (ufoOdds > 0 && transfers++ % ufoOdds === ufoOffset % ufoOdds ? "ufo" : "hand")
   const critters = createCritters(scene)
+  // The merged pen's cows: thousands of them, drawn instanced.
+  const herd = createHerd(scene)
 
   const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 500)
   camera.position.set(0, 42, 80)
@@ -214,11 +221,11 @@ export function createPastureScene(canvas: HTMLCanvasElement, events: PastureEve
 
   // Until someone drags or zooms, the camera backs up just enough that all five pens fit across the view.
   let touched = false
-  const tour = createTour(camera, controls)
+  const tour = createTour(camera, controls, () => scenery.backOffset())
   const upsidedown = createUpsidedown({
     camera,
     target: controls.target,
-    cows: () => cows.values(),
+    cows: () => [...cows.values(), ...herd.fallers()],
     onStage: (stage) => events.onUpsidedown?.(stage),
   })
   controls.addEventListener("start", () => {
@@ -288,8 +295,10 @@ export function createPastureScene(canvas: HTMLCanvasElement, events: PastureEve
 
   function pick(): PickTarget | undefined {
     raycaster.setFromCamera(pointer, camera)
-    const hits = raycaster.intersectObjects([cowRoot, critters.root], true)
+    const hits = raycaster.intersectObjects([cowRoot, critters.root, herd.root], true)
     for (const hit of hits) {
+      const grazing = herd.idOf(hit)
+      if (grazing) return { kind: "cow", id: grazing }
       const cowID = hit.object.userData.cowID as string | undefined
       if (cowID) {
         const cow = cows.get(cowID)
@@ -581,10 +590,14 @@ export function createPastureScene(canvas: HTMLCanvasElement, events: PastureEve
     shadows.count = i
     shadows.instanceMatrix.needsUpdate = true
     const selected = selectedID ? cows.get(selectedID) : undefined
-    ring.visible = !!selected && !selected.hidden && !selected.carried
+    const grazing = selectedID && !selected ? herd.position(selectedID) : undefined
+    ring.visible = (!!selected && !selected.hidden && !selected.carried) || !!grazing
     if (selected) {
       ring.position.set(selected.x, 0.035, selected.z)
       ring.scale.setScalar(selected.spec.breed.size)
+    } else if (grazing) {
+      ring.position.set(grazing.x, 0.035, grazing.z)
+      ring.scale.setScalar(grazing.size)
     }
   }
 
@@ -769,6 +782,7 @@ export function createPastureScene(canvas: HTMLCanvasElement, events: PastureEve
     frame++
     stepHand(dt, t)
     for (const cow of cows.values()) stepCow(cow, dt, t)
+    herd.tick(dt, t)
     if (frame % 3 === 0 && cows.size > 1) separate()
     critters.tick(dt, t, camera)
     for (const scorch of [...scorches]) {
@@ -799,6 +813,18 @@ export function createPastureScene(canvas: HTMLCanvasElement, events: PastureEve
   }
   animate()
 
+  /** The merged pen has grown or shrunk to fit its herd: move the fence, the lane, and everything behind. */
+  function applyLayout(layout: MergedLayout) {
+    const rect = penFor("merged").rect
+    if (rect.z0 === layout.rect.z0 && rect.x0 === layout.rect.x0 && rect.x1 === layout.rect.x1 && rect.z1 === layout.rect.z1) return
+    setMergedRect(layout.rect)
+    updateLane()
+    scenery.setBackFence(layout.rect.z0)
+    // A deep pen needs the camera to be allowed further back to take it all in.
+    controls.maxDistance = Math.max(140, (layout.rect.z1 - layout.rect.z0) * 1.5)
+    for (const cow of cows.values()) if (cow.pen === "merged" && !cow.carried && cow.mode === "walk") cow.target = pickTarget(cow)
+  }
+
   function updateSigns(specs: CowSpec[]) {
     const counts = new Map<PenID, number>()
     for (const spec of specs) counts.set(spec.pen, (counts.get(spec.pen) ?? 0) + 1)
@@ -812,10 +838,34 @@ export function createPastureScene(canvas: HTMLCanvasElement, events: PastureEve
 
   return {
     setCows(specs, animate) {
-      const next = new Map(specs.map((spec) => [spec.id, spec]))
+      const layout = mergedLayout(specs.reduce((n, spec) => (spec.pen === "merged" ? n + 1 : n), 0))
+      applyLayout(layout)
+      // Cows in the merged pen are drawn by the instanced herd. A rigged cow on its way there (the
+      // hand of god is carrying it, or is about to) stays rigged until it has been put down in the pen.
+      const rigged: CowSpec[] = []
+      const grazing: CowSpec[] = []
+      const placed = new Map<string, { x: number; z: number; heading: number }>()
+      for (const spec of specs) {
+        if (spec.pen !== "merged") {
+          rigged.push(spec)
+          continue
+        }
+        const cow = cows.get(spec.id)
+        if (cow) {
+          const busy = active?.cow === cow || cow.pendingPen !== undefined || cow.carried || cow.leaving || !!cow.burning
+          if (busy || (cow.pen !== "merged" && animate && seeded)) {
+            rigged.push(spec)
+            continue
+          }
+          placed.set(spec.id, { x: cow.x, z: cow.z, heading: cow.heading })
+          removeCow(cow)
+        }
+        grazing.push(spec)
+      }
+      const next = new Map(rigged.map((spec) => [spec.id, spec]))
       const changes: Transfer[] = []
       for (const [id, cow] of cows) if (!next.has(id) && !cow.leaving) changes.push({ kind: "depart", id })
-      for (const spec of specs) {
+      for (const spec of rigged) {
         const cow = cows.get(spec.id)
         if (!cow) changes.push({ kind: "arrive", id: spec.id })
         else if (cow.burning) continue
@@ -855,6 +905,7 @@ export function createPastureScene(canvas: HTMLCanvasElement, events: PastureEve
         }
       }
       // Anything queued for a pen it no longer belongs to is dropped when it comes up.
+      herd.set(grazing, layout, placed, seeded)
       seeded = true
       updateSigns(specs)
       for (const cow of cows.values()) applyDim(cow)
@@ -868,6 +919,7 @@ export function createPastureScene(canvas: HTMLCanvasElement, events: PastureEve
     },
     select(id) {
       selectedID = id
+      herd.select(id)
       for (const cow of cows.values()) cow.selected = cow.spec.id === id && !cow.carried && !cow.burning
     },
     burn(id) {
@@ -887,13 +939,17 @@ export function createPastureScene(canvas: HTMLCanvasElement, events: PastureEve
     },
     setFilter(authors) {
       filter = authors
+      herd.setFilter(authors)
       for (const cow of cows.values()) applyDim(cow)
     },
     screenPosition(id) {
       const cow = cows.get(id)
+      const grazing = cow ? undefined : herd.position(id)
       if (cow) {
         if (cow.hidden) return undefined
         tmp.set(cow.x, cow.parts.rig.position.y + headHeight(cow.spec.breed.size), cow.z)
+      } else if (grazing) {
+        tmp.set(grazing.x, grazing.y + headHeight(grazing.size), grazing.z)
       } else if (id === "john-pork") {
         tmp.copy(scenery.porkPosition())
       } else {
@@ -929,6 +985,9 @@ export function createPastureScene(canvas: HTMLCanvasElement, events: PastureEve
     upsidedownNow() {
       upsidedown.trigger()
     },
+    stats() {
+      return { frame: renderer.info.render.frame, calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, rigged: cows.size, herd: herd.size() }
+    },
     setCamera(position, target) {
       touched = true
       camera.position.set(...position)
@@ -937,7 +996,12 @@ export function createPastureScene(canvas: HTMLCanvasElement, events: PastureEve
     },
     focus(id, distance = 14) {
       const cow = cows.get(id)
-      const spot = cow ? { x: cow.x, y: cow.parts.rig.position.y + 0.9 * cow.spec.breed.size, z: cow.z } : critters.position(id)
+      const grazing = cow ? undefined : herd.position(id)
+      const spot = cow
+        ? { x: cow.x, y: cow.parts.rig.position.y + 0.9 * cow.spec.breed.size, z: cow.z }
+        : grazing
+          ? { x: grazing.x, y: grazing.y + 0.9 * grazing.size, z: grazing.z }
+          : critters.position(id)
       if (!spot) return false
       touched = true
       const direction = camera.position.clone().sub(controls.target).normalize()
@@ -963,6 +1027,7 @@ export function createPastureScene(canvas: HTMLCanvasElement, events: PastureEve
       }
       for (const cow of cows.values()) disposeCow(cow.parts)
       cows.clear()
+      herd.dispose()
       scene.traverse((object) => {
         const mesh = object as THREE.Mesh
         if (mesh.geometry) mesh.geometry.dispose()
