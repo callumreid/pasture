@@ -1,10 +1,11 @@
-import { createHash } from "node:crypto"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { createHash, randomUUID } from "node:crypto"
+import { mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { NextResponse, after } from "next/server"
 import { fetchHerd, fetchViewer, GitHubError } from "@/lib/github"
-import type { Herd, OpenMode, Scope } from "@/lib/pasture/types"
+import type { Herd, HerdRequest, OpenMode, Scope } from "@/lib/pasture/types"
+import { narrowHerd } from "@/lib/herd-fallback"
 import { blockedUntil, lowOnBudget } from "@/lib/rate-gate"
 import { resolveToken, tokenMode } from "@/lib/token"
 
@@ -31,7 +32,7 @@ const FRESH_MS = 5_000
 /** Herds remembered per instance; a quarter of a busy organization is a few megabytes each. */
 const MAX_ENTRIES = 40
 
-type Entry = { at: number; value: Herd }
+type Entry = { at: number; value: Herd; derived?: boolean }
 const cache = new Map<string, Entry>()
 const inflight = new Map<string, Promise<Herd>>()
 
@@ -53,24 +54,65 @@ async function viewerLogin(token: string) {
  * herd is also kept on disk. Never in sign-in mode: there every herd is one
  * person's, and Vercel's disk is not theirs.
  */
-const DISK = tokenMode() ? process.env.PASTURE_CACHE_DIR || join(tmpdir(), "pasture-herds") : undefined
+const DISK = tokenMode() ? process.env.PASTURE_CACHE_DIR || join(homedir(), ".cache", "pasture", "herds") : undefined
+// Read the old temporary location during migration, but write durable snapshots.
+const READ_DISKS = DISK ? [...new Set([DISK, ...(!process.env.PASTURE_CACHE_DIR ? [join(tmpdir(), "pasture-herds")] : [])])] : []
+const filename = (key: string) => `${key.replace(/[^A-Za-z0-9._-]/g, "_")}.json`
 
-async function readDisk(key: string): Promise<Entry | undefined> {
-  if (!DISK) return undefined
+async function readEntry(path: string): Promise<Entry | undefined> {
   try {
-    const entry = JSON.parse(await readFile(join(DISK, `${key.replace(/[^A-Za-z0-9._-]/g, "_")}.json`), "utf8")) as Entry
-    return entry && typeof entry.at === "number" && entry.value && Array.isArray(entry.value.open) ? entry : undefined
+    const entry = JSON.parse(await readFile(path, "utf8")) as Entry
+    const value = entry?.value
+    return Number.isFinite(entry?.at) && value?.scope && Number.isFinite(value.fetchedAt) &&
+      [value.open, value.merged, value.closed, value.people].every(Array.isArray) ? entry : undefined
   } catch {
     return undefined
   }
 }
 
-function writeDisk(key: string, entry: Entry) {
+async function readDisk(key: string): Promise<Entry | undefined> {
+  for (const dir of READ_DISKS) {
+    const entry = await readEntry(join(dir, filename(key)))
+    if (entry) {
+      if (dir !== DISK) await writeDisk(key, entry)
+      return entry
+    }
+  }
+}
+
+async function writeDisk(key: string, entry: Entry) {
   if (!DISK) return
-  const path = join(DISK, `${key.replace(/[^A-Za-z0-9._-]/g, "_")}.json`)
-  mkdir(DISK, { recursive: true })
-    .then(() => writeFile(path, JSON.stringify(entry)))
-    .catch(() => undefined)
+  const path = join(DISK, filename(key))
+  const temporary = `${path}.${randomUUID()}.tmp`
+  try {
+    await mkdir(DISK, { recursive: true, mode: 0o700 })
+    await writeFile(temporary, JSON.stringify(entry), { mode: 0o600 })
+    await rename(temporary, path)
+  } catch {
+    await unlink(temporary).catch(() => undefined)
+  }
+}
+
+async function fallback(identity: string, input: HerdRequest): Promise<Entry | undefined> {
+  let best: Entry | undefined
+  const consider = (entry: Entry) => {
+    if (best && best.value.fetchedAt >= entry.value.fetchedAt) return
+    const value = narrowHerd(entry.value, input)
+    if (value) best = { at: entry.at, value, derived: true }
+  }
+  // The token fingerprint AND scope must match: never reuse another person's herd.
+  for (const [key, entry] of cache) if (key.startsWith(`${identity}|`)) consider(entry)
+  const prefix = filename(`${identity}|`).slice(0, -5)
+  for (const dir of READ_DISKS) {
+    for (const name of await readdir(dir).catch(() => [] as string[])) {
+      if (!name.startsWith(prefix)) continue
+      const match = /^(\d+)_(all|active)\.json$/.exec(name.slice(prefix.length))
+      if (!match || Number(match[1]) < input.days || (input.openMode === "all" && match[2] !== "all")) continue
+      const entry = await readEntry(join(dir, name))
+      if (entry) consider(entry)
+    }
+  }
+  return best
 }
 
 function remember(key: string, value: Herd) {
@@ -78,15 +120,15 @@ function remember(key: string, value: Herd) {
   cache.delete(key)
   cache.set(key, entry)
   if (cache.size > MAX_ENTRIES) cache.delete(cache.keys().next().value!)
-  writeDisk(key, entry)
+  return writeDisk(key, entry)
 }
 
 function load(key: string, token: string, scope: Scope, days: number, openMode: OpenMode, previous?: Herd): Promise<Herd> {
   const running = inflight.get(key)
   if (running) return running
   const promise = fetchHerd(token, { scope, days, openMode }, Date.now(), previous)
-    .then((value) => {
-      remember(key, value)
+    .then(async (value) => {
+      await remember(key, value)
       return value
     })
     .finally(() => inflight.delete(key))
@@ -114,15 +156,24 @@ export async function GET(req: Request) {
   try {
     const scope: Scope = raw === "me" ? { kind: "me", login: await viewerLogin(token) } : { kind: "org", login: raw }
     if (scope.kind === "org" && !SCOPE.test(scope.login)) return NextResponse.json({ error: "That is not a GitHub organization name" }, { status: 400 })
-    const key = `${createHash("sha256").update(token).digest("hex").slice(0, 16)}|${scope.kind}:${scope.login}|${days}|${openMode}`
+    const identity = `${createHash("sha256").update(token).digest("hex").slice(0, 16)}|${scope.kind}:${scope.login}`
+    const key = `${identity}|${days}|${openMode}`
     let cached = cache.get(key)
     if (!cached) {
       cached = await readDisk(key)
       if (cached) cache.set(key, cached)
     }
+    if (!cached) {
+      cached = await fallback(identity, { scope, days, openMode })
+      if (cached) {
+        cache.set(key, cached)
+        if (cache.size > MAX_ENTRIES) cache.delete(cache.keys().next().value!)
+        await writeDisk(key, cached)
+      }
+    }
     const now = Date.now()
     const age = cached ? now - cached.at : Infinity
-    if (cached && (age < STALE_MS || (fresh && age < FRESH_MS))) return NextResponse.json(cached.value, { headers: headers(age) })
+    if (cached && !cached.derived && (age < STALE_MS || (fresh && age < FRESH_MS))) return NextResponse.json(cached.value, { headers: headers(age) })
     if (cached) {
       // GitHub has refused this account for the hour, or nearly has: keep the herd we have until it refills.
       if (blockedUntil(token) || lowOnBudget(token)) {
@@ -130,11 +181,11 @@ export async function GET(req: Request) {
         return NextResponse.json(stale(cached, new GitHubError("GitHub's hourly limit for this account is spent; showing the last herd until it resets.", 429, until || undefined)), { headers: headers(age, true) })
       }
       if (!fresh) {
-        after(() => load(key, token, scope, days, openMode, cached!.value).catch(() => undefined))
-        return NextResponse.json(cached.value, { headers: headers(age) })
+        after(() => load(key, token, scope, days, openMode, cached!.derived ? undefined : cached!.value).catch(() => undefined))
+        return NextResponse.json(cached.value, { headers: headers(age, cached.derived) })
       }
       try {
-        return NextResponse.json(await load(key, token, scope, days, openMode, cached.value), { headers: headers(0) })
+        return NextResponse.json(await load(key, token, scope, days, openMode, cached.derived ? undefined : cached.value), { headers: headers(0) })
       } catch (error) {
         return NextResponse.json(stale(cached, error), { headers: headers(age, true) })
       }
