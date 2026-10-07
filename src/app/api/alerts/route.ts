@@ -8,7 +8,7 @@ export const runtime = "nodejs"
 export const maxDuration = 30
 
 /** The most wolves the field will hold at once, however bad the day is. */
-export const WOLF_CAP = 8
+const WOLF_CAP = 8
 
 // Who a token belongs to changes rarely; remember it for the life of this instance.
 const viewers = new Map<string, { orgs: string[]; at: number }>()

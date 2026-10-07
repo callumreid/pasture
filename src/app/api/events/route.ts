@@ -11,7 +11,7 @@ let cache: { at: number; value: Promise<PartyEvent[]> } | undefined
 
 const feedUrls = () => (process.env.PASTURE_EVENTS_ICS || "").split(/[\s,]+/).filter((url) => /^https?:\/\//.test(url))
 
-export const eventsConfigured = () => feedUrls().length > 0 || !!process.env.PASTURE_EVENTS?.trim()
+const eventsConfigured = () => feedUrls().length > 0 || !!process.env.PASTURE_EVENTS?.trim()
 
 async function readFeed(url: string): Promise<PartyEvent[]> {
   const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(8000), headers: { accept: "text/calendar, text/plain;q=0.8, */*;q=0.5" } })

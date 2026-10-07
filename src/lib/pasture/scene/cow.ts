@@ -85,7 +85,7 @@ const cylinderSegments = (d: Detail, n: number) => Math.max(4, Math.round((n * d
 
 // ---------------------------------------------------------------- parts
 
-function torso(offset: number, d: Detail) {
+function torso(breed: Breed, offset: number, d: Detail) {
   // Radius along the body from rump (t = 0) to chest (t = 1).
   const profile: Array<[number, number]> = [
     [0, 0],
@@ -115,6 +115,8 @@ function torso(offset: number, d: Detail) {
     position.setY(i, ny)
   }
   geometry.computeVertexNormals()
+  if (breed.build === "broad") geometry.scale(1.18, 1.08, 1.03)
+  if (breed.build === "compact-broad") geometry.scale(1.18, 1.07, 0.91)
   geometry.translate(0, BODY_Y, 0)
   return toCoat(geometry, offset)
 }
@@ -171,9 +173,9 @@ function hump(offset: number, d: Detail) {
   return toCoat(geometry, offset)
 }
 
-function dewlap(offset: number, d: Detail) {
+function dewlap(offset: number, d: Detail, modest = false) {
   const geometry = new THREE.SphereGeometry(0.16, ...sphereSegments(d, 12, 8))
-  geometry.scale(0.75, 1.5, 1.6)
+  geometry.scale(0.75, modest ? 1.05 : 1.5, modest ? 1.3 : 1.6)
   geometry.translate(0, BODY_Y - 0.42, 0.72)
   return toCoat(geometry, offset)
 }
@@ -269,7 +271,7 @@ function headParts(breed: Breed, offset: number, d: Detail): THREE.BufferGeometr
       ear.rotateZ(side * -1.1)
       ear.translate(side * 0.3, 0.16, -0.05)
     } else {
-      ear.scale(1.35, 0.32, 0.75)
+      ear.scale(breed.longEars ? 1.65 : 1.35, 0.32, breed.longEars ? 0.85 : 0.75)
       ear.translate(side * 0.14, 0, 0)
       ear.rotateZ(side * 0.45)
       ear.translate(side * 0.3, 0.2, -0.05)
@@ -338,15 +340,16 @@ function merged(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
 
 /** The torso and everything fixed to it, minus the collar: what every cow of a breed shares. */
 function bodyParts(breed: Breed, offset: number, d: Detail) {
-  const parts = [torso(offset, d), neck(offset, d)]
+  const parts = [torso(breed, offset, d), neck(offset, d)]
   if (breed.shaggy) {
     // A thicker coat: the torso reads bigger under the same skeleton.
-    const shag = torso(offset + 0.5, d)
+    const shag = torso(breed, offset + 0.5, d)
     shag.scale(1.05, 1.05, 1.01)
     shag.translate(0, -BODY_Y * 0.05, 0)
     parts.push(shag)
   }
   if (breed.hump) parts.push(hump(offset, d), dewlap(offset, d))
+  else if (breed.dewlap) parts.push(dewlap(offset, d, true))
   if (breed.dairy) parts.push(...udder(d))
   return parts
 }

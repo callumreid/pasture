@@ -164,8 +164,11 @@ The hand is for moments, not migrations.
 
 Next.js on Vercel, Auth.js for the GitHub sign-in, GitHub's GraphQL search for the herd, three.js
 for the field. Everything on the field is built from primitives and canvas textures; there are no
-model files. A cow is seven meshes sharing one texture atlas per breed (thirty-two breeds, Nguni included, coats
-painted on the fly, a PR is always the same cow), so a few hundred fit in a frame.
+model files. A cow is seven meshes sharing one texture atlas per breed (38 breeds, Nguni, Aurochs
+and the Japanese breeds included, coats painted on the fly), so a few hundred fit in a frame. Breed selection
+is deterministic for a fixed catalogue: it uses the PR hash modulo the number of breeds. Adding these
+six breeds changes that divisor from 32 to 38, so most existing PRs will appear as a different breed
+after this update. Their breed remains stable as they move between pens within a catalogue version.
 
 ```bash
 npm run dev         # local dev server

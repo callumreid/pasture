@@ -23,6 +23,12 @@ export type Breed = {
   muzzle: string
   /** Dairy breeds get an udder. */
   dairy?: boolean
+  /** Beef breeds can have a wider barrel without changing the head and leg proportions. */
+  build?: "broad" | "compact-broad"
+  /** A modest loose fold under the throat, without a shoulder hump. */
+  dewlap?: boolean
+  /** Slightly longer ears than the usual upright pair. */
+  longEars?: boolean
 }
 
 export const BREEDS: Breed[] = [
@@ -58,9 +64,15 @@ export const BREEDS: Breed[] = [
   { id: "nguni", name: "Nguni", body: "#f4efe4", patch: "#3a2a22", pattern: "nguni", horns: "long", ears: "up", size: 0.95, muzzle: "#3a2a22" },
   { id: "nguni-red", name: "Nguni", body: "#efe6d6", patch: "#8e4a2c", pattern: "nguni", horns: "long", ears: "up", size: 0.95, muzzle: "#5a3a2a" },
   { id: "fleckvieh", name: "Fleckvieh", body: "#f6efe4", patch: "#c96a3f", pattern: "patches", horns: "none", ears: "up", size: 1.1, muzzle: "#e4bcac", dairy: true },
+  { id: "kuroge-washu", name: "Kuroge Washu", body: "#29201d", pattern: "solid", horns: "short", ears: "up", size: 1.02, muzzle: "#342824" },
+  { id: "akaushi", name: "Akaushi", body: "#ad482c", pattern: "solid", horns: "short", ears: "up", size: 1.04, muzzle: "#7c3b30" },
+  { id: "nihon-tankaku", name: "Nihon Tankaku", body: "#733c2c", pattern: "solid", horns: "short", ears: "up", size: 1.08, muzzle: "#5a352d", build: "broad" },
+  { id: "mukaku", name: "Mukaku", body: "#171818", pattern: "solid", horns: "none", ears: "up", size: 0.93, muzzle: "#292928", build: "compact-broad" },
+  { id: "beefmaster", name: "Beefmaster", body: "#95482f", pattern: "solid", horns: "none", ears: "up", size: 1.13, muzzle: "#694037", build: "broad", dewlap: true, longEars: true },
+  { id: "aurochs", name: "Aurochs", body: "#241c18", pattern: "solid", horns: "long", shaggy: true, ears: "up", size: 1.16, muzzle: "#ae8b69", build: "broad" },
 ]
 
-/** The same PR always grows up to be the same cow. */
+/** Stable for a fixed catalogue; changing its length reassigns some existing PRs. */
 export function breedFor(pr: Pick<PullRequest, "repo" | "number">): Breed {
   return BREEDS[hashString(`${pr.repo}#${pr.number}`) % BREEDS.length]
 }
