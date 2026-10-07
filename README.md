@@ -112,6 +112,14 @@ a second kiosk on the same login doubles that. If the hour's budget runs out, th
 the last herd it read (on disk too, so a rebuild does not lose it), says so in the corner, and
 catches up when the budget resets rather than emptying the pens.
 
+Changing to a shorter time window can reuse a wider saved herd from the same account and
+scope. The slice stays anchored to the original snapshot time and is labelled stale until
+GitHub refreshes it; **Active** also filters open PRs by their last update. A narrower snapshot
+cannot supply missing history for a wider window, and an Active snapshot cannot supply All open.
+TV snapshots live in `~/.cache/pasture/herds` (override with `PASTURE_CACHE_DIR`), with atomic
+writes and automatic migration from the old temporary cache. Signed-in hosted users keep
+account-isolated memory caches only; their herds are never written to shared disk.
+
 ## Run your own
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fcallumreid%2Fpasture&env=AUTH_GITHUB_ID,AUTH_GITHUB_SECRET,AUTH_SECRET,PASTURE_DEFAULT_ORG&envDescription=A%20GitHub%20OAuth%20app%27s%20client%20id%20and%20secret%2C%20a%20random%20session%20secret%2C%20and%20the%20organization%20the%20field%20opens%20on&project-name=pasture&repository-name=pasture)
