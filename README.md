@@ -71,6 +71,10 @@ merges; the back pen is drawn as one instanced herd, so a few thousand cows cost
 dozen used to. A lifted merged cow fetches its diff on its own, since asking for thousands of diffs
 at once is what made a big window slow.
 
+## OpenChamber extension
+
+Use your own GitHub account to see your pull requests in OpenChamber. [Install Pasture for OpenChamber](extensions/openchamber-pasture/README.md) for setup, permissions and feature limits.
+
 ## Use it
 
 Go to **[pasture-six.vercel.app](https://pasture-six.vercel.app)** and sign in with GitHub. Pick
